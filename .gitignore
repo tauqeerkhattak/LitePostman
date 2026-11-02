@@ -1,0 +1,56 @@
+# ========================
+# Build & Binary Output
+# ========================
+build/
+build-*/
+cmake-build-*/
+out/
+bin/
+*.exe
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.pdb
+*.ilk
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+
+# ========================
+# IDEs & Editors
+# ========================
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# VS Code (ignore user state, optionally keep configs)
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# ========================
+# Runtime & Debug Logs
+# ========================
+*.log
+envlog.txt
+
+# ========================
+# OS Generated
+# ========================
+[Dd]esktop.ini
+Thumbs.db
+.DS_Store
