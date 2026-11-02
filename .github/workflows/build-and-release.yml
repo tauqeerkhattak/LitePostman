@@ -45,15 +45,20 @@ jobs:
       - name: Setup NSIS (Installer Creator)
         shell: pwsh
         run: |
-          if (Test-Path "C:\Program Files (x86)\NSIS") {
-            "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          } else {
+          if (-not (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe")) {
             choco install nsis -y --no-progress
           }
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Create Windows Setup Installer (NSIS)
+        shell: pwsh
         run: |
-          makensis installer.nsi
+          if (-not (Test-Path "build/LitePostman.exe") -and (Test-Path "build/Release/LitePostman.exe")) {
+            Copy-Item "build/Release/LitePostman.exe" -Destination "build/LitePostman.exe"
+          }
+          $makensis = (Get-Command makensis -ErrorAction SilentlyContinue)?.Source
+          if (-not $makensis) { $makensis = "C:\Program Files (x86)\NSIS\makensis.exe" }
+          & $makensis installer.nsi
 
       - name: Create Portable Zip Package
         shell: pwsh
