@@ -66,7 +66,7 @@ jobs:
           Compress-Archive -Path build/LitePostman.exe -DestinationPath LitePostman-windows-x64.zip -Force
 
       - name: Upload Workflow Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: LitePostman-Windows-Build
           path: |
