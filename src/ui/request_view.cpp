@@ -156,19 +156,21 @@ void RequestView::layout() {
 
     const int pad = t.scale(16);
     const int gap = t.scale(8);
-    const int titleH = t.scale(30);
+    const int titleH = t.scale(36);
     const int rowH = t.scale(36);
     const int methodW = t.scale(112);
     const int sendW = t.scale(96);
     const int saveW = t.scale(78);
+    const int singleEditH = t.scale(20);
 
     // Row 0: Request Title & Save button
     const int titleY = pad;
     const int titleW = std::max(t.scale(80), width - pad * 2 - saveW - gap);
     titleRect_ = {pad, titleY, pad + titleW, titleY + titleH};
     if (title_) {
-        MoveWindow(title_, titleRect_.left + t.scale(10), titleRect_.top + t.scale(5),
-                   titleRect_.right - titleRect_.left - t.scale(20), titleH - t.scale(10), TRUE);
+        const int titleOffsetY = (titleH - singleEditH) / 2;
+        MoveWindow(title_, titleRect_.left + t.scale(10), titleRect_.top + titleOffsetY,
+                   titleRect_.right - titleRect_.left - t.scale(20), singleEditH, TRUE);
     }
     if (saveBtn_) {
         MoveWindow(saveBtn_, width - pad - saveW, titleY, saveW, titleH, TRUE);
@@ -182,8 +184,9 @@ void RequestView::layout() {
     const int urlW = std::max(t.scale(80), width - urlX - pad - sendW - gap);
     urlRect_ = {urlX, rowY, urlX + urlW, rowY + rowH};
     if (url_) {
-        MoveWindow(url_, urlRect_.left + t.scale(10), urlRect_.top + t.scale(6),
-                   urlRect_.right - urlRect_.left - t.scale(20), rowH - t.scale(12), TRUE);
+        const int urlOffsetY = (rowH - singleEditH) / 2;
+        MoveWindow(url_, urlRect_.left + t.scale(10), urlRect_.top + urlOffsetY,
+                   urlRect_.right - urlRect_.left - t.scale(20), singleEditH, TRUE);
     }
     if (sendBtn_) MoveWindow(sendBtn_, width - pad - sendW, rowY, sendW, rowH, TRUE);
 
@@ -219,8 +222,9 @@ void RequestView::layout() {
 
     auto placeEdit = [&](HWND edit, const RECT& box) {
         if (!edit) return;
-        MoveWindow(edit, box.left + t.scale(10), box.top + t.scale(4),
-                   box.right - box.left - t.scale(20), box.bottom - box.top - t.scale(8), TRUE);
+        const int offsetY = (box.bottom - box.top - singleEditH) / 2;
+        MoveWindow(edit, box.left + t.scale(10), box.top + offsetY,
+                   box.right - box.left - t.scale(20), singleEditH, TRUE);
     };
     placeEdit(user_, userRect_);
     placeEdit(pass_, passRect_);
@@ -406,10 +410,15 @@ RequestModel RequestView::getRequest() const {
     return req;
 }
 
-void RequestView::focusUrl() {
+void RequestView::focusUrl(bool selectAll) {
     if (!url_) return;
     SetFocus(url_);
-    SendMessageW(url_, EM_SETSEL, 0, -1);
+    if (selectAll) {
+        SendMessageW(url_, EM_SETSEL, 0, -1);
+    } else {
+        const int len = GetWindowTextLengthW(url_);
+        SendMessageW(url_, EM_SETSEL, len, len);
+    }
 }
 
 void RequestView::setBusy(bool busy) {
@@ -446,6 +455,13 @@ LRESULT RequestView::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         layout();
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
+    case WM_SETFOCUS:
+        if (lastFocusedEdit_ && IsWindow(lastFocusedEdit_) && IsWindowVisible(lastFocusedEdit_)) {
+            SetFocus(lastFocusedEdit_);
+        } else if (url_) {
+            SetFocus(url_);
+        }
+        return 0;
     case WM_COMMAND: {
         const HWND control = reinterpret_cast<HWND>(lParam);
         const WORD notification = HIWORD(wParam);
@@ -466,6 +482,7 @@ LRESULT RequestView::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         if (notification == EN_SETFOCUS) {
             focusedEdit_ = control;
+            lastFocusedEdit_ = control;
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
         }

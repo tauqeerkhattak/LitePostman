@@ -688,8 +688,10 @@ void paintDialog(EnvState* state) {
 void placeEdit(HWND edit, const RECT& box) {
     if (!edit) return;
     const Theme& t = theme();
-    MoveWindow(edit, box.left + t.scale(10), box.top + t.scale(5),
-               box.right - box.left - t.scale(20), box.bottom - box.top - t.scale(10), TRUE);
+    const int editH = t.scale(20);
+    const int offsetY = (box.bottom - box.top - editH) / 2;
+    MoveWindow(edit, box.left + t.scale(10), box.top + offsetY,
+               box.right - box.left - t.scale(20), editH, TRUE);
 }
 
 void layoutDialog(EnvState* state) {

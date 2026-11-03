@@ -30,9 +30,14 @@ public:
     void setSelectHandler(SelectHandler handler, void* context);
     void setEnvironment(const std::wstring& name, bool active);
     void selectNode(const std::string& collectionId, const std::string& nodeId);
+    void expand(const std::string& key);
     void getContextTarget(std::string& collectionId, std::string& nodeId) const {
         collectionId = contextCollection_;
         nodeId = contextNode_;
+    }
+    void clearContextTarget() {
+        contextCollection_.clear();
+        contextNode_.clear();
     }
 
 private:

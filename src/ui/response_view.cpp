@@ -100,7 +100,7 @@ void ResponseView::layout() {
     const int pad = t.scale(12);
     if (tabs_) MoveWindow(tabs_, pad, t.scale(46), rc.right - pad * 2, t.scale(34), TRUE);
     if (copyBtn_) {
-        MoveWindow(copyBtn_, rc.right - pad - t.scale(70), t.scale(12), t.scale(70), t.scale(30), TRUE);
+        MoveWindow(copyBtn_, rc.right - pad - t.scale(70), t.scale(10), t.scale(70), t.scale(26), TRUE);
     }
     if (edit_) {
         MoveWindow(edit_, pad + t.scale(8), t.scale(88) + t.scale(8),
@@ -247,11 +247,13 @@ void ResponseView::paint() {
     }
 
     const SIZE pillSize = measureText(dc, pillText, t.fontSmallBold);
-    RECT pill = {t.scale(16), t.scale(12), t.scale(16) + pillSize.cx + t.scale(20), t.scale(36)};
+    const int barY = t.scale(10);
+    const int barH = t.scale(26);
+    RECT pill = {t.scale(16), barY, t.scale(16) + pillSize.cx + t.scale(20), barY + barH};
     drawPill(dc, pill, pillText, t.fontSmallBold, pillColor, pillBg);
 
     if (!meta_.empty()) {
-        RECT meta = {pill.right + t.scale(10), t.scale(12), rc.right - t.scale(100), t.scale(36)};
+        RECT meta = {pill.right + t.scale(10), barY, rc.right - t.scale(100), barY + barH};
         drawText(dc, toWide(meta_), meta, t.fontSmall, t.textMuted,
                  DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     }

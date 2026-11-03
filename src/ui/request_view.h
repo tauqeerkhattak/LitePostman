@@ -23,7 +23,7 @@ public:
     void resize(int x, int y, int width, int height);
     void setRequest(const RequestModel& req);
     RequestModel getRequest() const;
-    void focusUrl();
+    void focusUrl(bool selectAll = false);
     void setBusy(bool busy);
     HWND getSendButton() const { return sendBtn_; }
 
@@ -61,6 +61,7 @@ private:
     RECT tokenRect_ = {};
 
     HWND focusedEdit_ = nullptr;
+    HWND lastFocusedEdit_ = nullptr;
     int page_ = 0;
     RequestModel request_;
     bool syncing_ = false;

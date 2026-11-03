@@ -98,6 +98,7 @@ private:
 
     std::string currentCollectionId_;
     std::string currentNodeId_;
+    HWND lastFocusedChild_ = nullptr;
 };
 
 } // namespace ui

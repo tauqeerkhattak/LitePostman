@@ -188,17 +188,25 @@ void Sidebar::ensureVisible(int index) {
     scroll_ = std::max(0, scroll_);
 }
 
+void Sidebar::expand(const std::string& key) {
+    if (key.empty()) return;
+    expanded_[key] = true;
+    rebuild();
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void Sidebar::selectIndex(int index, bool activate) {
     if (index < 0 || index >= static_cast<int>(rows_.size())) return;
     const Row& row = rows_[static_cast<std::size_t>(index)];
+    selectedCollection_ = row.collectionId;
+    selectedNode_ = row.nodeId;
     if (row.folder) {
         if (activate) {
             toggle(row.collectionId.empty() ? std::string() : (row.nodeId.empty() ? row.collectionId : row.nodeId), true);
             rebuild();
         }
+        if (activate && handler_) handler_(context_, row.collectionId, row.nodeId);
     } else {
-        selectedCollection_ = row.collectionId;
-        selectedNode_ = row.nodeId;
         if (activate && handler_) handler_(context_, row.collectionId, row.nodeId);
     }
     ensureVisible(index);
@@ -261,8 +269,8 @@ void Sidebar::paint() {
                          top + i * rowH - scroll_ + rowH - t.scale(2)};
             if (item.bottom < top || item.top > bottom) continue;
 
-            const bool selected = !row.folder && row.nodeId == selectedNode_ &&
-                                  row.collectionId == selectedCollection_;
+            const bool selected = (row.collection && row.collectionId == selectedCollection_ && selectedNode_.empty()) ||
+                                  (!row.folder && row.nodeId == selectedNode_ && row.collectionId == selectedCollection_);
             if (selected) {
                 fillRound(dc, item, t.scale(6), t.accentSoft);
             } else if (i == hover_) {
@@ -414,15 +422,7 @@ LRESULT Sidebar::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         const int index = rowAt(y);
         if (index < 0) return 0;
-        const Row row = rows_[static_cast<std::size_t>(index)];
-        if (row.folder) {
-            const std::string key = row.nodeId.empty() ? row.collectionId : row.nodeId;
-            expanded_[key] = !isExpanded(key, row.collection);
-            rebuild();
-            InvalidateRect(hwnd_, nullptr, FALSE);
-        } else {
-            selectIndex(index, true);
-        }
+        selectIndex(index, true);
         return 0;
     }
     case WM_RBUTTONUP: {

@@ -157,13 +157,15 @@ LRESULT CALLBACK promptProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     const int editX = t.scale(20);
     const int editY = t.scale(56);
     const int editW = width - t.scale(40);
-    const int editH = t.scale(34);
+    const int editH = t.scale(36);
+    const int singleH = t.scale(20);
+    const int offsetY = (editH - singleH) / 2;
     state.input = {editX, editY, editX + editW, editY + editH};
 
     state.edit = CreateWindowExW(0, WC_EDITW, value.c_str(),
                                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                 editX + t.scale(10), editY + t.scale(4),
-                                 editW - t.scale(20), editH - t.scale(8),
+                                 editX + t.scale(10), editY + offsetY,
+                                 editW - t.scale(20), singleH,
                                  hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(5001)),
                                  GetModuleHandleW(nullptr), nullptr);
     SendMessageW(state.edit, WM_SETFONT, reinterpret_cast<WPARAM>(t.fontUi), TRUE);
@@ -669,7 +671,23 @@ bool MainWindow::saveCurrentRequest(bool createIfMissing) {
 void MainWindow::onNewRequest() {
     saveCurrentRequest(false);
 
-    Collection* collection = activeCollection();
+    std::string targetColId;
+    std::string targetNodeId;
+    sidebar_.getContextTarget(targetColId, targetNodeId);
+    sidebar_.clearContextTarget();
+
+    Collection* collection = nullptr;
+    if (!targetColId.empty()) {
+        for (auto& col : collections_) {
+            if (col.id == targetColId) {
+                collection = &col;
+                break;
+            }
+        }
+    }
+    if (!collection) {
+        collection = activeCollection();
+    }
     if (!collection) {
         Collection created;
         created.id = newId("collection");
@@ -693,11 +711,13 @@ void MainWindow::onNewRequest() {
     currentNodeId_ = nodeId;
     settings_.activeCollectionId = collection->id;
 
+    sidebar_.expand(collection->id);
+
     storage_.saveCollection(*collection, nullptr);
     refreshSidebar();
     sidebar_.selectNode(currentCollectionId_, currentNodeId_);
     requestView_.setRequest(request);
-    requestView_.focusUrl();
+    requestView_.focusUrl(false);
 }
 
 void MainWindow::onSaveRequest() {
@@ -710,7 +730,10 @@ void MainWindow::sidebarSelectTrampoline(void* context, const std::string& colle
 }
 
 void MainWindow::onSidebarSelect(const std::string& collectionId, const std::string& nodeId) {
-    settings_.activeCollectionId = collectionId;
+    if (!collectionId.empty()) {
+        currentCollectionId_ = collectionId;
+        settings_.activeCollectionId = collectionId;
+    }
     if (nodeId.empty()) return; // folder/collection row: keep the open request
     if (collectionId == currentCollectionId_ && nodeId == currentNodeId_) return;
 
@@ -728,7 +751,7 @@ void MainWindow::onSidebarSelect(const std::string& collectionId, const std::str
     currentCollectionId_ = collectionId;
     currentNodeId_ = nodeId;
     requestView_.setRequest(selected->request);
-    requestView_.focusUrl();
+    requestView_.focusUrl(false);
 }
 
 void MainWindow::refreshSidebar() {
@@ -1139,6 +1162,27 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     case kRequestFinished:
         onRequestFinished(reinterpret_cast<HttpResponse*>(lParam));
         return 0;
+    case WM_ACTIVATE: {
+        const WORD state = LOWORD(wParam);
+        if (state == WA_INACTIVE) {
+            HWND curFocus = GetFocus();
+            if (curFocus && IsChild(hwnd_, curFocus)) {
+                lastFocusedChild_ = curFocus;
+            }
+        } else {
+            if (lastFocusedChild_ && IsWindow(lastFocusedChild_) && IsWindowVisible(lastFocusedChild_)) {
+                SetFocus(lastFocusedChild_);
+            }
+        }
+        return 0;
+    }
+    case WM_SETFOCUS: {
+        if (lastFocusedChild_ && IsWindow(lastFocusedChild_) && IsWindowVisible(lastFocusedChild_)) {
+            SetFocus(lastFocusedChild_);
+            return 0;
+        }
+        break;
+    }
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
         case 40001: onSend(); return 0;
