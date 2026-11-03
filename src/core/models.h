@@ -11,7 +11,7 @@ namespace lite {
 
 enum class BodyMode { None, Raw, FormUrlEncoded, Multipart };
 enum class BodyLanguage { Json, Text, Xml };
-enum class AuthType { None, Basic, Bearer };
+enum class AuthType { Inherit, None, Basic, Bearer };
 enum class ThemeMode { System, Light, Dark };
 
 struct KeyValue {
@@ -41,7 +41,7 @@ struct RequestModel {
     BodyLanguage bodyLanguage = BodyLanguage::Json;
     std::string rawBody;
     std::vector<KeyValue> formFields;
-    AuthType authType = AuthType::None;
+    AuthType authType = AuthType::Inherit;
     std::string username;
     std::string password;
     std::string token;
@@ -55,6 +55,12 @@ struct CollectionNode {
     Type type = Type::Folder;
     RequestModel request;
     std::vector<CollectionNode> children;
+
+    // Folder-level auth
+    AuthType authType = AuthType::Inherit;
+    std::string username;
+    std::string password;
+    std::string token;
 };
 
 struct Collection {
@@ -63,6 +69,20 @@ struct Collection {
     std::string name;
     std::vector<KeyValue> variables;
     std::vector<CollectionNode> children;
+
+    // Collection-level auth
+    AuthType authType = AuthType::None;
+    std::string username;
+    std::string password;
+    std::string token;
+};
+
+struct ResolvedAuth {
+    AuthType type = AuthType::None;
+    std::string username;
+    std::string password;
+    std::string token;
+    std::string sourceName;
 };
 
 struct TabState {
@@ -142,7 +162,7 @@ bool base64Decode(const std::string& input, std::string& output);
 
 Json requestToJson(const RequestModel& request);
 RequestModel requestFromJson(const Json& json);
-Json collectionToJson(const Collection& collection);
+Json collectionToJson(const Collection& collection, bool includeSecrets = false);
 Collection collectionFromJson(const Json& json);
 Json environmentsToJson(const EnvironmentStore& store);
 EnvironmentStore environmentsFromJson(const Json& json);
@@ -157,7 +177,9 @@ CollectionNode* findParent(Collection& collection, const std::string& id);
 bool removeNode(Collection& collection, const std::string& id);
 CollectionNode* insertNode(Collection& collection, const std::string& parentId, CollectionNode node, int index = -1);
 bool moveNode(Collection& collection, const std::string& nodeId, const std::string& newParentId, int index = -1);
+bool moveNodeCrossCollection(Collection& sourceCol, Collection& destCol, const std::string& nodeId, const std::string& newParentId, int index = -1);
 CollectionNode duplicateNode(const CollectionNode& node);
+ResolvedAuth resolveEffectiveAuth(const Collection& collection, const std::string& requestNodeId, const RequestModel& request);
 
 VariableMap variablesToMap(const std::vector<KeyValue>& values);
 VariableContext makeVariableContext(const VariableMap& global, const VariableMap& collection, const EnvironmentStore& environments);

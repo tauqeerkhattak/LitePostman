@@ -25,6 +25,7 @@ public:
     RequestModel getRequest() const;
     void focusUrl(bool selectAll = false);
     void setBusy(bool busy);
+    void setInheritedAuthHint(const std::wstring& hint);
     HWND getSendButton() const { return sendBtn_; }
 
 private:
@@ -36,6 +37,7 @@ private:
     void applyFonts();
     void paint();
     void drawInput(HDC dc, const RECT& rc, bool focused) const;
+    void tryFormatBodyJson();
 
     HWND hwnd_ = nullptr;
     HWND title_ = nullptr;
@@ -65,6 +67,7 @@ private:
     int page_ = 0;
     RequestModel request_;
     bool syncing_ = false;
+    std::wstring inheritedAuthHint_;
 };
 
 } // namespace ui

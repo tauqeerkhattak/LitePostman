@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <ctime>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -208,6 +209,660 @@ LRESULT CALLBACK promptProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (state.accepted) {
         value = state.value;
         return !value.empty();
+    }
+    return false;
+}
+
+// --- Export dialog ----------------------------------------------------------
+
+struct ExportDialogState {
+    HWND hwnd = nullptr;
+    HWND chkSecrets = nullptr;
+    HWND btnOk = nullptr;
+    HWND btnCancel = nullptr;
+    std::wstring colName;
+    bool includeSecrets = false;
+    bool done = false;
+    bool accepted = false;
+};
+
+LRESULT CALLBACK exportDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* state = reinterpret_cast<ExportDialogState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+    case WM_NCCREATE: {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        state = reinterpret_cast<ExportDialogState*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+        if (state) state->hwnd = hwnd;
+        return TRUE;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        if (!state) return 0;
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        const Theme& t = theme();
+        fillRect(dc, rc, t.surface);
+
+        RECT titleRc = {t.scale(20), t.scale(16), rc.right - t.scale(20), t.scale(38)};
+        std::wstring titleText = L"Export: " + state->colName;
+        drawText(dc, titleText.c_str(), titleRc, t.fontUiBold, t.text,
+                 DT_SINGLELINE | DT_TOP | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+        RECT subRc = {t.scale(20), t.scale(40), rc.right - t.scale(20), t.scale(62)};
+        drawText(dc, L"Configure export settings for this collection.", subRc, t.fontUi, t.textMuted,
+                 DT_SINGLELINE | DT_TOP | DT_NOPREFIX);
+
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_CTLCOLORSTATIC: {
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        SetTextColor(dc, theme().text);
+        SetBkColor(dc, theme().surface);
+        return reinterpret_cast<LRESULT>(themeBrush(theme().surface));
+    }
+    case WM_COMMAND: {
+        if (!state) return 0;
+        const int id = LOWORD(wParam);
+        if (id == IDOK) {
+            state->includeSecrets = (SendMessageW(state->chkSecrets, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            state->accepted = true;
+            state->done = true;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        if (id == IDCANCEL) {
+            state->done = true;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        return 0;
+    }
+    case WM_CLOSE:
+        if (state) state->done = true;
+        DestroyWindow(hwnd);
+        return 0;
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+bool showExportDialog(HWND owner, const std::string& colName, bool& includeSecrets) {
+    static bool registered = false;
+    const wchar_t kClass[] = L"LitePostmanExportDialog";
+    if (!registered) {
+        WNDCLASSEXW wc = {};
+        wc.cbSize = sizeof(WNDCLASSEXW);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = exportDialogProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.lpszClassName = kClass;
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+
+    const Theme& t = theme();
+    const int width = t.scale(420);
+    const int height = t.scale(180);
+
+    RECT ownerRect = {0, 0, 800, 600};
+    if (owner) GetWindowRect(owner, &ownerRect);
+    const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
+    const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
+
+    ExportDialogState state;
+    state.colName = toWide(colName);
+    state.includeSecrets = includeSecrets;
+
+    HWND hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, kClass, L"Export Collection Options",
+                                WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                                x, y, width, height, owner, nullptr, GetModuleHandleW(nullptr), &state);
+    if (!hwnd) return false;
+
+    themeApplyTitleBar(hwnd, theme().dark);
+
+    state.chkSecrets = CreateWindowExW(0, WC_BUTTONW, L"Include secret variables in exported content",
+                                       WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                       t.scale(20), t.scale(74), width - t.scale(40), t.scale(24),
+                                       hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(6001)),
+                                       GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.chkSecrets, WM_SETFONT, reinterpret_cast<WPARAM>(t.fontUi), TRUE);
+    if (includeSecrets) SendMessageW(state.chkSecrets, BM_SETCHECK, BST_CHECKED, 0);
+
+    const int buttonW = t.scale(88);
+    const int buttonH = t.scale(32);
+    const int buttonY = height - t.scale(18) - buttonH;
+    state.btnCancel = createFlatButton(hwnd, IDCANCEL, L"Cancel", kButtonSecondary);
+    state.btnOk = createFlatButton(hwnd, IDOK, L"Export", kButtonPrimary);
+    MoveWindow(state.btnCancel, width - t.scale(20) - buttonW, buttonY, buttonW, buttonH, TRUE);
+    MoveWindow(state.btnOk, width - t.scale(20) - buttonW * 2 - t.scale(8), buttonY, buttonW, buttonH, TRUE);
+    setButtonBackdrop(state.btnCancel, t.surface);
+    setButtonBackdrop(state.btnOk, t.surface);
+
+    if (owner) EnableWindow(owner, FALSE);
+    ShowWindow(hwnd, SW_SHOW);
+    SetFocus(state.btnOk);
+
+    MSG msg;
+    while (!state.done && GetMessageW(&msg, nullptr, 0, 0)) {
+        if (!IsDialogMessageW(hwnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+
+    if (owner) {
+        EnableWindow(owner, TRUE);
+        SetActiveWindow(owner);
+    }
+    if (state.accepted) {
+        includeSecrets = state.includeSecrets;
+        return true;
+    }
+    return false;
+}
+
+// --- Auth dialog ------------------------------------------------------------
+
+struct AuthDialogState {
+    HWND hwnd = nullptr;
+    HWND authDropdown = nullptr;
+    HWND userEdit = nullptr;
+    HWND passEdit = nullptr;
+    HWND tokenEdit = nullptr;
+    HWND btnSave = nullptr;
+    HWND btnCancel = nullptr;
+    std::wstring targetName;
+    bool isFolder = false;
+    AuthType authType = AuthType::None;
+    std::string username;
+    std::string password;
+    std::string token;
+    RECT userRect = {};
+    RECT passRect = {};
+    RECT tokenRect = {};
+    bool done = false;
+    bool accepted = false;
+};
+
+static void updateAuthDialogFields(AuthDialogState* s) {
+    if (!s || !s->authDropdown) return;
+    int curSel = dropdownGetCurSel(s->authDropdown);
+    AuthType selectedType;
+    if (s->isFolder) {
+        if (curSel == 0) selectedType = AuthType::Inherit;
+        else if (curSel == 1) selectedType = AuthType::None;
+        else if (curSel == 2) selectedType = AuthType::Basic;
+        else selectedType = AuthType::Bearer;
+    } else {
+        if (curSel == 0) selectedType = AuthType::None;
+        else if (curSel == 1) selectedType = AuthType::Basic;
+        else selectedType = AuthType::Bearer;
+    }
+
+    const bool showBasic = (selectedType == AuthType::Basic);
+    const bool showBearer = (selectedType == AuthType::Bearer);
+    if (s->userEdit) ShowWindow(s->userEdit, showBasic ? SW_SHOW : SW_HIDE);
+    if (s->passEdit) ShowWindow(s->passEdit, showBasic ? SW_SHOW : SW_HIDE);
+    if (s->tokenEdit) ShowWindow(s->tokenEdit, showBearer ? SW_SHOW : SW_HIDE);
+    if (s->hwnd) InvalidateRect(s->hwnd, nullptr, FALSE);
+}
+
+LRESULT CALLBACK authDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* state = reinterpret_cast<AuthDialogState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+    case WM_NCCREATE: {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        state = reinterpret_cast<AuthDialogState*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+        if (state) state->hwnd = hwnd;
+        return TRUE;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        if (!state) return 0;
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        const Theme& t = theme();
+        fillRect(dc, rc, t.surface);
+
+        RECT titleRc = {t.scale(20), t.scale(16), rc.right - t.scale(20), t.scale(38)};
+        std::wstring header = (state->isFolder ? L"Folder Auth: " : L"Collection Auth: ") + state->targetName;
+        drawText(dc, header.c_str(), titleRc, t.fontUiBold, t.text,
+                 DT_SINGLELINE | DT_TOP | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+        RECT typeLabelRc = {t.scale(20), t.scale(42), rc.right - t.scale(20), t.scale(60)};
+        drawText(dc, L"Authentication Type", typeLabelRc, t.fontSmallBold, t.textMuted,
+                 DT_SINGLELINE | DT_TOP | DT_NOPREFIX);
+
+        int curSel = state->authDropdown ? dropdownGetCurSel(state->authDropdown) : 0;
+        AuthType selectedType;
+        if (state->isFolder) {
+            if (curSel == 0) selectedType = AuthType::Inherit;
+            else if (curSel == 1) selectedType = AuthType::None;
+            else if (curSel == 2) selectedType = AuthType::Basic;
+            else selectedType = AuthType::Bearer;
+        } else {
+            if (curSel == 0) selectedType = AuthType::None;
+            else if (curSel == 1) selectedType = AuthType::Basic;
+            else selectedType = AuthType::Bearer;
+        }
+
+        if (selectedType == AuthType::Basic) {
+            RECT userLabel = {t.scale(20), t.scale(104), rc.right - t.scale(20), t.scale(122)};
+            drawText(dc, L"Username", userLabel, t.fontSmallBold, t.textMuted,
+                     DT_SINGLELINE | DT_TOP | DT_NOPREFIX);
+            fillRound(dc, state->userRect, t.scale(6), t.inputBg);
+            strokeRound(dc, state->userRect, t.scale(6), GetFocus() == state->userEdit ? t.accent : t.border, 1);
+
+            RECT passLabel = {t.scale(20), t.scale(164), rc.right - t.scale(20), t.scale(182)};
+            drawText(dc, L"Password", passLabel, t.fontSmallBold, t.textMuted,
+                     DT_SINGLELINE | DT_TOP | DT_NOPREFIX);
+            fillRound(dc, state->passRect, t.scale(6), t.inputBg);
+            strokeRound(dc, state->passRect, t.scale(6), GetFocus() == state->passEdit ? t.accent : t.border, 1);
+        } else if (selectedType == AuthType::Bearer) {
+            RECT tokenLabel = {t.scale(20), t.scale(104), rc.right - t.scale(20), t.scale(122)};
+            drawText(dc, L"Bearer Token", tokenLabel, t.fontSmallBold, t.textMuted,
+                     DT_SINGLELINE | DT_TOP | DT_NOPREFIX);
+            fillRound(dc, state->tokenRect, t.scale(6), t.inputBg);
+            strokeRound(dc, state->tokenRect, t.scale(6), GetFocus() == state->tokenEdit ? t.accent : t.border, 1);
+        } else if (selectedType == AuthType::Inherit) {
+            RECT hintRc = {t.scale(20), t.scale(110), rc.right - t.scale(20), t.scale(160)};
+            drawText(dc, L"Inherit authentication settings from the parent folder or collection.",
+                     hintRc, t.fontUi, t.textMuted, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+        } else {
+            RECT hintRc = {t.scale(20), t.scale(110), rc.right - t.scale(20), t.scale(160)};
+            drawText(dc, L"Requests in this scope will have no default authentication.",
+                     hintRc, t.fontUi, t.textMuted, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+        }
+
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_CTLCOLOREDIT: {
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        SetTextColor(dc, theme().text);
+        SetBkColor(dc, theme().inputBg);
+        return reinterpret_cast<LRESULT>(themeBrush(theme().inputBg));
+    }
+    case WM_COMMAND: {
+        if (!state) return 0;
+        const WORD notif = HIWORD(wParam);
+        const HWND ctrl = reinterpret_cast<HWND>(lParam);
+        if (ctrl == state->authDropdown && notif == CBN_SELCHANGE) {
+            updateAuthDialogFields(state);
+            return 0;
+        }
+        const int id = LOWORD(wParam);
+        if (id == IDOK) {
+            int curSel = dropdownGetCurSel(state->authDropdown);
+            if (state->isFolder) {
+                if (curSel == 0) state->authType = AuthType::Inherit;
+                else if (curSel == 1) state->authType = AuthType::None;
+                else if (curSel == 2) state->authType = AuthType::Basic;
+                else state->authType = AuthType::Bearer;
+            } else {
+                if (curSel == 0) state->authType = AuthType::None;
+                else if (curSel == 1) state->authType = AuthType::Basic;
+                else state->authType = AuthType::Bearer;
+            }
+            state->username = windowTextUtf8(state->userEdit);
+            state->password = windowTextUtf8(state->passEdit);
+            state->token = windowTextUtf8(state->tokenEdit);
+            state->accepted = true;
+            state->done = true;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        if (id == IDCANCEL) {
+            state->done = true;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        return 0;
+    }
+    case WM_CLOSE:
+        if (state) state->done = true;
+        DestroyWindow(hwnd);
+        return 0;
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+bool showAuthDialog(HWND owner, const std::string& targetName, bool isFolder,
+                    AuthType& authType, std::string& username, std::string& password, std::string& token) {
+    static bool registered = false;
+    const wchar_t kClass[] = L"LitePostmanAuthDialog";
+    if (!registered) {
+        WNDCLASSEXW wc = {};
+        wc.cbSize = sizeof(WNDCLASSEXW);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = authDialogProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.lpszClassName = kClass;
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+
+    const Theme& t = theme();
+    const int width = t.scale(460);
+    const int height = t.scale(280);
+
+    RECT ownerRect = {0, 0, 800, 600};
+    if (owner) GetWindowRect(owner, &ownerRect);
+    const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
+    const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
+
+    AuthDialogState state;
+    state.targetName = toWide(targetName);
+    state.isFolder = isFolder;
+    state.authType = authType;
+    state.username = username;
+    state.password = password;
+    state.token = token;
+
+    HWND hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, kClass,
+                                isFolder ? L"Folder Authentication" : L"Collection Authentication",
+                                WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                                x, y, width, height, owner, nullptr, GetModuleHandleW(nullptr), &state);
+    if (!hwnd) return false;
+
+    themeApplyTitleBar(hwnd, theme().dark);
+
+    state.authDropdown = createDropdown(hwnd, 6101);
+    MoveWindow(state.authDropdown, t.scale(20), t.scale(62), width - t.scale(40), t.scale(32), TRUE);
+    if (isFolder) {
+        dropdownAdd(state.authDropdown, L"Inherit auth from parent");
+        dropdownAdd(state.authDropdown, L"No Auth");
+        dropdownAdd(state.authDropdown, L"Basic Auth");
+        dropdownAdd(state.authDropdown, L"Bearer Token");
+        int sel = 0;
+        if (authType == AuthType::Inherit) sel = 0;
+        else if (authType == AuthType::None) sel = 1;
+        else if (authType == AuthType::Basic) sel = 2;
+        else if (authType == AuthType::Bearer) sel = 3;
+        dropdownSetCurSel(state.authDropdown, sel);
+    } else {
+        dropdownAdd(state.authDropdown, L"No Auth");
+        dropdownAdd(state.authDropdown, L"Basic Auth");
+        dropdownAdd(state.authDropdown, L"Bearer Token");
+        int sel = 0;
+        if (authType == AuthType::None) sel = 0;
+        else if (authType == AuthType::Basic) sel = 1;
+        else if (authType == AuthType::Bearer) sel = 2;
+        dropdownSetCurSel(state.authDropdown, sel);
+    }
+    dropdownSetBackdrop(state.authDropdown, t.surface);
+
+    const int fieldW = width - t.scale(40);
+    const int singleH = t.scale(20);
+    const int boxH = t.scale(32);
+    const int offsetSingle = (boxH - singleH) / 2;
+
+    state.userRect = {t.scale(20), t.scale(124), t.scale(20) + fieldW, t.scale(124) + boxH};
+    state.passRect = {t.scale(20), t.scale(184), t.scale(20) + fieldW, t.scale(184) + boxH};
+    state.tokenRect = {t.scale(20), t.scale(124), t.scale(20) + fieldW, t.scale(124) + boxH};
+
+    state.userEdit = CreateWindowExW(0, WC_EDITW, toWide(username).c_str(),
+                                     WS_CHILD | ES_AUTOHSCROLL,
+                                     state.userRect.left + t.scale(8), state.userRect.top + offsetSingle,
+                                     fieldW - t.scale(16), singleH,
+                                     hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(6102)),
+                                     GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.userEdit, WM_SETFONT, reinterpret_cast<WPARAM>(t.fontUi), TRUE);
+
+    state.passEdit = CreateWindowExW(0, WC_EDITW, toWide(password).c_str(),
+                                     WS_CHILD | ES_AUTOHSCROLL | ES_PASSWORD,
+                                     state.passRect.left + t.scale(8), state.passRect.top + offsetSingle,
+                                     fieldW - t.scale(16), singleH,
+                                     hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(6103)),
+                                     GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.passEdit, WM_SETFONT, reinterpret_cast<WPARAM>(t.fontUi), TRUE);
+
+    state.tokenEdit = CreateWindowExW(0, WC_EDITW, toWide(token).c_str(),
+                                      WS_CHILD | ES_AUTOHSCROLL,
+                                      state.tokenRect.left + t.scale(8), state.tokenRect.top + offsetSingle,
+                                      fieldW - t.scale(16), singleH,
+                                      hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(6104)),
+                                      GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.tokenEdit, WM_SETFONT, reinterpret_cast<WPARAM>(t.fontUi), TRUE);
+
+    const int buttonW = t.scale(88);
+    const int buttonH = t.scale(32);
+    const int buttonY = height - t.scale(16) - buttonH;
+    state.btnCancel = createFlatButton(hwnd, IDCANCEL, L"Cancel", kButtonSecondary);
+    state.btnSave = createFlatButton(hwnd, IDOK, L"Save", kButtonPrimary);
+    MoveWindow(state.btnCancel, width - t.scale(20) - buttonW, buttonY, buttonW, buttonH, TRUE);
+    MoveWindow(state.btnSave, width - t.scale(20) - buttonW * 2 - t.scale(8), buttonY, buttonW, buttonH, TRUE);
+    setButtonBackdrop(state.btnCancel, t.surface);
+    setButtonBackdrop(state.btnSave, t.surface);
+
+    updateAuthDialogFields(&state);
+
+    if (owner) EnableWindow(owner, FALSE);
+    ShowWindow(hwnd, SW_SHOW);
+
+    MSG msg;
+    while (!state.done && GetMessageW(&msg, nullptr, 0, 0)) {
+        if (!IsDialogMessageW(hwnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+
+    if (owner) {
+        EnableWindow(owner, TRUE);
+        SetActiveWindow(owner);
+    }
+    if (state.accepted) {
+        authType = state.authType;
+        username = state.username;
+        password = state.password;
+        token = state.token;
+        return true;
+    }
+    return false;
+}
+
+// --- Move Dialog ------------------------------------------------------------
+
+struct MoveDestination {
+    std::string collectionId;
+    std::string folderId;
+    std::wstring display;
+};
+
+struct MoveDialogState {
+    HWND hwnd = nullptr;
+    HWND dropdown = nullptr;
+    HWND btnMove = nullptr;
+    HWND btnCancel = nullptr;
+    std::wstring nodeName;
+    bool isFolder = false;
+    std::vector<MoveDestination> dests;
+    std::string outColId;
+    std::string outParentId;
+    bool done = false;
+    bool accepted = false;
+};
+
+LRESULT CALLBACK moveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* state = reinterpret_cast<MoveDialogState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+    case WM_NCCREATE: {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        state = reinterpret_cast<MoveDialogState*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+        if (state) state->hwnd = hwnd;
+        return TRUE;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        if (!state) return 0;
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        const Theme& t = theme();
+        fillRect(dc, rc, t.surface);
+
+        RECT titleRc = {t.scale(20), t.scale(16), rc.right - t.scale(20), t.scale(38)};
+        std::wstring header = (state->isFolder ? L"Move Folder: " : L"Move Request: ") + state->nodeName;
+        drawText(dc, header.c_str(), titleRc, t.fontUiBold, t.text,
+                 DT_SINGLELINE | DT_TOP | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+        RECT subRc = {t.scale(20), t.scale(42), rc.right - t.scale(20), t.scale(62)};
+        drawText(dc, L"Select target collection or folder destination:", subRc, t.fontUi, t.textMuted,
+                 DT_SINGLELINE | DT_TOP | DT_NOPREFIX);
+
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_COMMAND: {
+        if (!state) return 0;
+        const int id = LOWORD(wParam);
+        if (id == IDOK) {
+            int sel = state->dropdown ? dropdownGetCurSel(state->dropdown) : -1;
+            if (sel >= 0 && sel < static_cast<int>(state->dests.size())) {
+                state->outColId = state->dests[static_cast<std::size_t>(sel)].collectionId;
+                state->outParentId = state->dests[static_cast<std::size_t>(sel)].folderId;
+                state->accepted = true;
+            }
+            state->done = true;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        if (id == IDCANCEL) {
+            state->done = true;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        return 0;
+    }
+    case WM_CLOSE:
+        if (state) state->done = true;
+        DestroyWindow(hwnd);
+        return 0;
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+bool showMoveDialog(HWND owner, const std::string& nodeName, bool isFolder,
+                    const std::vector<Collection>& collections,
+                    [[maybe_unused]] const std::string& curColId, const std::string& nodeId,
+                    std::string& outColId, std::string& outParentId) {
+    std::vector<MoveDestination> dests;
+
+    std::function<void(const std::string&, const std::vector<CollectionNode>&, const std::wstring&)> collectFolders;
+    collectFolders = [&](const std::string& colId, const std::vector<CollectionNode>& nodes, const std::wstring& prefix) {
+        for (const auto& node : nodes) {
+            if (node.type != CollectionNode::Type::Folder) continue;
+            if (isFolder && node.id == nodeId) continue;
+            std::wstring path = prefix + L" / " + toWide(node.name);
+            dests.push_back({colId, node.id, path});
+            collectFolders(colId, node.children, path);
+        }
+    };
+
+    for (const auto& col : collections) {
+        dests.push_back({col.id, "", toWide(col.name) + L" (Collection Root)"});
+        collectFolders(col.id, col.children, toWide(col.name));
+    }
+
+    if (dests.empty()) {
+        MessageBoxW(owner, L"No destinations available.", L"Move", MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+
+    static bool registered = false;
+    const wchar_t kClass[] = L"LitePostmanMoveDialog";
+    if (!registered) {
+        WNDCLASSEXW wc = {};
+        wc.cbSize = sizeof(WNDCLASSEXW);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = moveDialogProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.lpszClassName = kClass;
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+
+    const Theme& t = theme();
+    const int width = t.scale(460);
+    const int height = t.scale(200);
+
+    RECT ownerRect = {0, 0, 800, 600};
+    if (owner) GetWindowRect(owner, &ownerRect);
+    const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
+    const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
+
+    MoveDialogState state;
+    state.nodeName = toWide(nodeName);
+    state.isFolder = isFolder;
+    state.dests = dests;
+
+    HWND hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, kClass,
+                                isFolder ? L"Move Folder" : L"Move Request",
+                                WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                                x, y, width, height, owner, nullptr, GetModuleHandleW(nullptr), &state);
+    if (!hwnd) return false;
+
+    themeApplyTitleBar(hwnd, theme().dark);
+
+    state.dropdown = createDropdown(hwnd, 7001);
+    MoveWindow(state.dropdown, t.scale(20), t.scale(70), width - t.scale(40), t.scale(32), TRUE);
+    for (const auto& d : dests) {
+        dropdownAdd(state.dropdown, d.display);
+    }
+    dropdownSetCurSel(state.dropdown, 0);
+    dropdownSetBackdrop(state.dropdown, t.surface);
+
+    const int buttonW = t.scale(88);
+    const int buttonH = t.scale(32);
+    const int buttonY = height - t.scale(20) - buttonH;
+    state.btnCancel = createFlatButton(hwnd, IDCANCEL, L"Cancel", kButtonSecondary);
+    state.btnMove = createFlatButton(hwnd, IDOK, L"Move", kButtonPrimary);
+    MoveWindow(state.btnCancel, width - t.scale(20) - buttonW, buttonY, buttonW, buttonH, TRUE);
+    MoveWindow(state.btnMove, width - t.scale(20) - buttonW * 2 - t.scale(8), buttonY, buttonW, buttonH, TRUE);
+    setButtonBackdrop(state.btnCancel, t.surface);
+    setButtonBackdrop(state.btnMove, t.surface);
+
+    if (owner) EnableWindow(owner, FALSE);
+    ShowWindow(hwnd, SW_SHOW);
+    SetFocus(state.btnMove);
+
+    MSG msg;
+    while (!state.done && GetMessageW(&msg, nullptr, 0, 0)) {
+        if (!IsDialogMessageW(hwnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+
+    if (owner) {
+        EnableWindow(owner, TRUE);
+        SetActiveWindow(owner);
+    }
+    if (state.accepted) {
+        outColId = state.outColId;
+        outParentId = state.outParentId;
+        return true;
     }
     return false;
 }
@@ -512,7 +1167,7 @@ void MainWindow::onSend() {
 
     saveCurrentRequest(false);
 
-    const RequestModel request = requestView_.getRequest();
+    RequestModel request = requestView_.getRequest();
     if (request.url.empty()) {
         MessageBoxW(hwnd_, L"Enter a request URL first.", L"LitePostman", MB_OK | MB_ICONINFORMATION);
         requestView_.focusUrl();
@@ -521,6 +1176,13 @@ void MainWindow::onSend() {
 
     const VariableMap global = variablesToMap(settings_.globalVariables);
     Collection* collection = activeCollection();
+    if (collection) {
+        ResolvedAuth eff = resolveEffectiveAuth(*collection, currentNodeId_, request);
+        request.authType = eff.type;
+        request.username = eff.username;
+        request.password = eff.password;
+        request.token = eff.token;
+    }
     const VariableMap collectionVariables =
         variablesToMap(collection ? collection->variables : std::vector<KeyValue>());
     const VariableContext context = makeVariableContext(global, collectionVariables, environments_);
@@ -705,17 +1367,40 @@ void MainWindow::onNewRequest() {
     node.type = CollectionNode::Type::Request;
     node.request = request;
     const std::string nodeId = node.id;
-    insertNode(*collection, std::string(), std::move(node), -1);
+    std::string parentId;
+    if (!targetNodeId.empty()) {
+        CollectionNode* tn = findNode(*collection, targetNodeId);
+        if (tn && tn->type == CollectionNode::Type::Folder) {
+            parentId = targetNodeId;
+        } else {
+            CollectionNode* p = findParent(*collection, targetNodeId);
+            if (p) parentId = p->id;
+        }
+    }
+    insertNode(*collection, parentId, std::move(node), -1);
 
     currentCollectionId_ = collection->id;
     currentNodeId_ = nodeId;
     settings_.activeCollectionId = collection->id;
 
     sidebar_.expand(collection->id);
+    if (!parentId.empty()) sidebar_.expand(parentId);
 
     storage_.saveCollection(*collection, nullptr);
     refreshSidebar();
     sidebar_.selectNode(currentCollectionId_, currentNodeId_);
+
+    ResolvedAuth eff = resolveEffectiveAuth(*collection, nodeId, request);
+    std::wstring hint;
+    if (eff.type == AuthType::Basic) {
+        hint = L"Basic Auth (" + toWide(eff.username) + L") from " + toWide(eff.sourceName);
+    } else if (eff.type == AuthType::Bearer) {
+        hint = L"Bearer Token from " + toWide(eff.sourceName);
+    } else {
+        hint = L"No Auth from " + toWide(eff.sourceName);
+    }
+    requestView_.setInheritedAuthHint(hint);
+
     requestView_.setRequest(request);
     requestView_.focusUrl(false);
 }
@@ -750,6 +1435,22 @@ void MainWindow::onSidebarSelect(const std::string& collectionId, const std::str
 
     currentCollectionId_ = collectionId;
     currentNodeId_ = nodeId;
+
+    for (const auto& collection : collections_) {
+        if (collection.id != collectionId) continue;
+        ResolvedAuth eff = resolveEffectiveAuth(collection, nodeId, selected->request);
+        std::wstring hint;
+        if (eff.type == AuthType::Basic) {
+            hint = L"Basic Auth (" + toWide(eff.username) + L") from " + toWide(eff.sourceName);
+        } else if (eff.type == AuthType::Bearer) {
+            hint = L"Bearer Token from " + toWide(eff.sourceName);
+        } else {
+            hint = L"No Auth from " + toWide(eff.sourceName);
+        }
+        requestView_.setInheritedAuthHint(hint);
+        break;
+    }
+
     requestView_.setRequest(selected->request);
     requestView_.focusUrl(false);
 }
@@ -777,10 +1478,18 @@ void MainWindow::onImportCurl() {
 }
 
 void MainWindow::onExportCurl() {
-    const RequestModel request = requestView_.getRequest();
+    RequestModel request = requestView_.getRequest();
     const VariableMap global = variablesToMap(settings_.globalVariables);
-    const VariableMap collection = variablesToMap(std::vector<KeyValue>());
-    const VariableContext context = makeVariableContext(global, collection, environments_);
+    Collection* collection = activeCollection();
+    if (collection) {
+        ResolvedAuth eff = resolveEffectiveAuth(*collection, currentNodeId_, request);
+        request.authType = eff.type;
+        request.username = eff.username;
+        request.password = eff.password;
+        request.token = eff.token;
+    }
+    const VariableMap colVars = variablesToMap(collection ? collection->variables : std::vector<KeyValue>());
+    const VariableContext context = makeVariableContext(global, colVars, environments_);
 
     CurlExportOptions options;
     options.target = CurlTarget::Bash;
@@ -918,6 +1627,11 @@ void MainWindow::onExportCollection() {
         return;
     }
 
+    bool includeSecrets = false;
+    if (!showExportDialog(hwnd_, target->name, includeSecrets)) {
+        return;
+    }
+
     wchar_t filename[MAX_PATH] = {};
     std::wstring defName = toWide(target->name) + L".json";
     wcsncpy(filename, defName.c_str(), MAX_PATH - 1);
@@ -933,7 +1647,7 @@ void MainWindow::onExportCollection() {
 
     if (!GetSaveFileNameW(&ofn)) return;
 
-    Json json = collectionToJson(*target);
+    Json json = collectionToJson(*target, includeSecrets);
     std::string serialized = json.dump(2);
 
     FILE* fp = _wfopen(filename, L"wb");
@@ -1092,6 +1806,207 @@ void MainWindow::onDeleteRequest() {
     }
 }
 
+void MainWindow::onNewFolder() {
+    std::string targetColId, targetNodeId;
+    sidebar_.getContextTarget(targetColId, targetNodeId);
+    if (targetColId.empty()) targetColId = currentCollectionId_;
+
+    Collection* targetCol = nullptr;
+    for (auto& col : collections_) {
+        if (col.id == targetColId) { targetCol = &col; break; }
+    }
+    if (!targetCol) targetCol = activeCollection();
+    if (!targetCol) {
+        Collection created;
+        created.id = newId("collection");
+        created.name = "My Collection";
+        collections_.push_back(std::move(created));
+        targetCol = &collections_.back();
+    }
+
+    std::wstring name = L"New Folder";
+    if (promptForText(hwnd_, L"New Folder", L"Folder name:", name)) {
+        CollectionNode folder;
+        folder.id = newId("folder");
+        folder.name = toUtf8(name);
+        folder.type = CollectionNode::Type::Folder;
+        folder.authType = AuthType::Inherit;
+
+        std::string parentId;
+        if (!targetNodeId.empty()) {
+            CollectionNode* tn = findNode(*targetCol, targetNodeId);
+            if (tn && tn->type == CollectionNode::Type::Folder) {
+                parentId = targetNodeId;
+            } else {
+                CollectionNode* p = findParent(*targetCol, targetNodeId);
+                if (p) parentId = p->id;
+            }
+        }
+        insertNode(*targetCol, parentId, std::move(folder), -1);
+        storage_.saveCollection(*targetCol, nullptr);
+        sidebar_.expand(targetCol->id);
+        if (!parentId.empty()) sidebar_.expand(parentId);
+        refreshSidebar();
+    }
+}
+
+void MainWindow::onRenameFolder() {
+    std::string targetColId, targetNodeId;
+    sidebar_.getContextTarget(targetColId, targetNodeId);
+    if (targetColId.empty()) targetColId = currentCollectionId_;
+    if (targetNodeId.empty()) return;
+
+    for (auto& col : collections_) {
+        if (col.id != targetColId) continue;
+        CollectionNode* node = findNode(col, targetNodeId);
+        if (node && node->type == CollectionNode::Type::Folder) {
+            std::wstring name = toWide(node->name);
+            if (promptForText(hwnd_, L"Rename Folder", L"Folder name:", name)) {
+                node->name = toUtf8(name);
+                storage_.saveCollection(col, nullptr);
+                refreshSidebar();
+            }
+        }
+        break;
+    }
+}
+
+void MainWindow::onDeleteFolder() {
+    std::string targetColId, targetNodeId;
+    sidebar_.getContextTarget(targetColId, targetNodeId);
+    if (targetColId.empty()) targetColId = currentCollectionId_;
+    if (targetNodeId.empty()) return;
+
+    for (auto& col : collections_) {
+        if (col.id != targetColId) continue;
+        const CollectionNode* node = findNode(col, targetNodeId);
+        if (!node) break;
+
+        std::wstring prompt = L"Are you sure you want to delete the folder \"" + toWide(node->name) + L"\" and all its contents?";
+        if (MessageBoxW(hwnd_, prompt.c_str(), L"Delete Folder", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+            return;
+        }
+
+        removeNode(col, targetNodeId);
+        storage_.saveCollection(col, nullptr);
+        refreshSidebar();
+        break;
+    }
+}
+
+void MainWindow::onMoveNode() {
+    std::string targetColId, targetNodeId;
+    sidebar_.getContextTarget(targetColId, targetNodeId);
+    if (targetColId.empty()) targetColId = currentCollectionId_;
+    if (targetNodeId.empty()) targetNodeId = currentNodeId_;
+    if (targetColId.empty() || targetNodeId.empty()) return;
+
+    Collection* srcCol = nullptr;
+    for (auto& c : collections_) {
+        if (c.id == targetColId) { srcCol = &c; break; }
+    }
+    if (!srcCol) return;
+
+    CollectionNode* node = findNode(*srcCol, targetNodeId);
+    if (!node) return;
+
+    bool isFolder = (node->type == CollectionNode::Type::Folder);
+    std::string destColId, destParentId;
+    if (showMoveDialog(hwnd_, node->name, isFolder, collections_, srcCol->id, node->id, destColId, destParentId)) {
+        Collection* dstCol = nullptr;
+        for (auto& c : collections_) {
+            if (c.id == destColId) { dstCol = &c; break; }
+        }
+        if (!dstCol) return;
+
+        if (moveNodeCrossCollection(*srcCol, *dstCol, targetNodeId, destParentId, -1)) {
+            storage_.saveCollection(*srcCol, nullptr);
+            if (srcCol->id != dstCol->id) {
+                storage_.saveCollection(*dstCol, nullptr);
+            }
+            currentCollectionId_ = dstCol->id;
+            sidebar_.expand(dstCol->id);
+            if (!destParentId.empty()) sidebar_.expand(destParentId);
+            refreshSidebar();
+            sidebar_.selectNode(currentCollectionId_, targetNodeId);
+        } else {
+            MessageBoxW(hwnd_, L"Failed to move node to the selected destination.", L"Move", MB_OK | MB_ICONWARNING);
+        }
+    }
+}
+
+void MainWindow::onEditAuth() {
+    std::string targetColId, targetNodeId;
+    sidebar_.getContextTarget(targetColId, targetNodeId);
+    if (targetColId.empty()) targetColId = currentCollectionId_;
+
+    Collection* col = nullptr;
+    for (auto& c : collections_) {
+        if (c.id == targetColId) { col = &c; break; }
+    }
+    if (!col) return;
+
+    if (!targetNodeId.empty()) {
+        CollectionNode* node = findNode(*col, targetNodeId);
+        if (node && node->type == CollectionNode::Type::Folder) {
+            AuthType authType = node->authType;
+            std::string user = node->username;
+            std::string pass = node->password;
+            std::string token = node->token;
+            if (showAuthDialog(hwnd_, node->name, true, authType, user, pass, token)) {
+                node->authType = authType;
+                node->username = user;
+                node->password = pass;
+                node->token = token;
+                storage_.saveCollection(*col, nullptr);
+                if (!currentNodeId_.empty()) {
+                    const CollectionNode* curReq = findNode(*col, currentNodeId_);
+                    if (curReq && curReq->type == CollectionNode::Type::Request) {
+                        ResolvedAuth eff = resolveEffectiveAuth(*col, curReq->id, curReq->request);
+                        std::wstring hint;
+                        if (eff.type == AuthType::Basic) {
+                            hint = L"Basic Auth (" + toWide(eff.username) + L") from " + toWide(eff.sourceName);
+                        } else if (eff.type == AuthType::Bearer) {
+                            hint = L"Bearer Token from " + toWide(eff.sourceName);
+                        } else {
+                            hint = L"No Auth from " + toWide(eff.sourceName);
+                        }
+                        requestView_.setInheritedAuthHint(hint);
+                    }
+                }
+            }
+            return;
+        }
+    }
+
+    AuthType authType = col->authType;
+    std::string user = col->username;
+    std::string pass = col->password;
+    std::string token = col->token;
+    if (showAuthDialog(hwnd_, col->name, false, authType, user, pass, token)) {
+        col->authType = authType;
+        col->username = user;
+        col->password = pass;
+        col->token = token;
+        storage_.saveCollection(*col, nullptr);
+        if (!currentNodeId_.empty() && col->id == currentCollectionId_) {
+            const CollectionNode* curReq = findNode(*col, currentNodeId_);
+            if (curReq && curReq->type == CollectionNode::Type::Request) {
+                ResolvedAuth eff = resolveEffectiveAuth(*col, curReq->id, curReq->request);
+                std::wstring hint;
+                if (eff.type == AuthType::Basic) {
+                    hint = L"Basic Auth (" + toWide(eff.username) + L") from " + toWide(eff.sourceName);
+                } else if (eff.type == AuthType::Bearer) {
+                    hint = L"Bearer Token from " + toWide(eff.sourceName);
+                } else {
+                    hint = L"No Auth from " + toWide(eff.sourceName);
+                }
+                requestView_.setInheritedAuthHint(hint);
+            }
+        }
+    }
+}
+
 std::vector<std::pair<std::wstring, std::wstring>> MainWindow::collectVariablesForMenu() const {
     std::vector<std::pair<std::wstring, std::wstring>> list;
     std::unordered_set<std::wstring> seen;
@@ -1192,6 +2107,7 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         case 40005: PostMessageW(hwnd_, WM_CLOSE, 0, 0); return 0;
         case 40006: onSaveRequest(); return 0;
         case 40007: onNewRequest(); return 0;
+        case 40008: onNewFolder(); return 0;
         case 40010: onNewCollection(); return 0;
         case 40011: onRenameCollection(); return 0;
         case 40012: onDeleteCollection(); return 0;
@@ -1199,6 +2115,10 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         case 40014: onRenameRequest(); return 0;
         case 40015: onDuplicateRequest(); return 0;
         case 40016: onDeleteRequest(); return 0;
+        case 40017: onMoveNode(); return 0;
+        case 40018: onEditAuth(); return 0;
+        case 40019: onRenameFolder(); return 0;
+        case 40020: onDeleteFolder(); return 0;
         case 40100: toggleTheme(); return 0;
         case 40102: onEnvChipClick(); return 0;
         default: break;

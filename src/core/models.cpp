@@ -136,6 +136,14 @@ void addNodeToJson(const CollectionNode& node, Json& array) {
     item["id"] = node.id;
     item["name"] = node.name;
     item["type"] = node.type == CollectionNode::Type::Folder ? "folder" : "request";
+    if (node.type == CollectionNode::Type::Folder) {
+        Json auth = Json::object();
+        auth["type"] = authTypeName(node.authType);
+        auth["username"] = node.username;
+        auth["password"] = node.password;
+        auth["token"] = node.token;
+        item["auth"] = std::move(auth);
+    }
     if (node.type == CollectionNode::Type::Request) item["request"] = requestToJson(node.request);
     if (!node.children.empty()) {
         Json children = Json::array();
@@ -151,6 +159,13 @@ CollectionNode nodeFromJson(const Json& json) {
     if (node.id.empty()) node.id = newId("node");
     node.name = json.getString("name", "Untitled");
     node.type = json.getString("type") == "request" ? CollectionNode::Type::Request : CollectionNode::Type::Folder;
+    if (node.type == CollectionNode::Type::Folder) {
+        const Json auth = json.getObject("auth");
+        node.authType = authTypeFromName(auth.getString("type", "inherit"));
+        node.username = auth.getString("username");
+        node.password = auth.getString("password");
+        node.token = auth.getString("token");
+    }
     node.request = requestFromJson(json.getObject("request"));
     if (node.request.name.empty() || node.request.name == "Untitled Request") node.request.name = node.name;
     const Json children = json.getArray("children");
@@ -165,6 +180,26 @@ static CollectionNode parsePostmanItem(const Json& item) {
 
     if (item.find("item")) {
         node.type = CollectionNode::Type::Folder;
+        if (item.find("auth")) {
+            const Json a = item.getObject("auth");
+            std::string type = a.getString("type");
+            if (type == "bearer") {
+                node.authType = AuthType::Bearer;
+                const Json bearer = a.getArray("bearer");
+                for (const auto& bp : bearer.items()) {
+                    if (bp.getString("key") == "token") node.token = bp.getString("value");
+                }
+            } else if (type == "basic") {
+                node.authType = AuthType::Basic;
+                const Json basic = a.getArray("basic");
+                for (const auto& bp : basic.items()) {
+                    if (bp.getString("key") == "username") node.username = bp.getString("value");
+                    if (bp.getString("key") == "password") node.password = bp.getString("value");
+                }
+            } else if (type == "noauth") {
+                node.authType = AuthType::None;
+            }
+        }
         const Json subItems = item.getArray("item");
         for (const auto& sub : subItems.items()) {
             node.children.push_back(parsePostmanItem(sub));
@@ -507,13 +542,31 @@ RequestModel requestFromJson(const Json& json) {
     return request;
 }
 
-Json collectionToJson(const Collection& collection) {
+Json collectionToJson(const Collection& collection, bool includeSecrets) {
     Json root = Json::object();
     root["version"] = collection.version;
     Json item = Json::object();
     item["id"] = collection.id;
     item["name"] = collection.name;
-    item["variables"] = keyValuesToJson(collection.variables);
+
+    Json auth = Json::object();
+    auth["type"] = authTypeName(collection.authType);
+    auth["username"] = collection.username;
+    auth["password"] = collection.password;
+    auth["token"] = collection.token;
+    item["auth"] = std::move(auth);
+
+    Json vars = Json::array();
+    for (const auto& var : collection.variables) {
+        Json v = Json::object();
+        v["key"] = var.key;
+        v["value"] = (!includeSecrets && var.secret) ? "" : var.value;
+        v["enabled"] = var.enabled;
+        v["secret"] = var.secret;
+        vars.push(std::move(v));
+    }
+    item["variables"] = std::move(vars);
+
     Json children = Json::array();
     for (const auto& child : collection.children) addNodeToJson(child, children);
     item["children"] = std::move(children);
@@ -528,26 +581,104 @@ Collection collectionFromJson(const Json& json) {
         collection.name = "Imported Collection";
         return collection;
     }
+
+    auto autoMapLocalUrl = [&]() {
+        auto scanUrls = [&](auto& self, const std::vector<CollectionNode>& nodes) -> void {
+            for (const auto& n : nodes) {
+                if (n.type == CollectionNode::Type::Request) {
+                    std::string u = n.request.url;
+                    std::string lowerU = u;
+                    std::transform(lowerU.begin(), lowerU.end(), lowerU.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+                    if (lowerU.find("{{localurl}}") != std::string::npos) {
+                        bool found = false;
+                        for (const auto& var : collection.variables) {
+                            if (var.key == "localUrl" || var.key == "localurl" || var.key == "localURL") {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            collection.variables.push_back(KeyValue{"localUrl", "http://localhost:3000", true, false, false});
+                        }
+                    }
+                    if (lowerU.find("{{baseurl}}") != std::string::npos) {
+                        bool found = false;
+                        for (const auto& var : collection.variables) {
+                            if (var.key == "baseUrl" || var.key == "baseurl" || var.key == "baseURL") {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            collection.variables.push_back(KeyValue{"baseUrl", "https://api.example.com", true, false, false});
+                        }
+                    }
+                } else {
+                    self(self, n.children);
+                }
+            }
+        };
+        scanUrls(scanUrls, collection.children);
+    };
+
     if (json.find("info")) {
         const Json info = json.getObject("info");
         collection.id = newId("collection");
         collection.name = info.getString("name", "Postman Collection");
+        if (json.find("auth")) {
+            const Json a = json.getObject("auth");
+            std::string type = a.getString("type");
+            if (type == "bearer") {
+                collection.authType = AuthType::Bearer;
+                const Json bearer = a.getArray("bearer");
+                for (const auto& bp : bearer.items()) {
+                    if (bp.getString("key") == "token") collection.token = bp.getString("value");
+                }
+            } else if (type == "basic") {
+                collection.authType = AuthType::Basic;
+                const Json basic = a.getArray("basic");
+                for (const auto& bp : basic.items()) {
+                    if (bp.getString("key") == "username") collection.username = bp.getString("value");
+                    if (bp.getString("key") == "password") collection.password = bp.getString("value");
+                }
+            }
+        }
+        if (json.find("variable")) {
+            const Json vars = json.getArray("variable");
+            for (const auto& v : vars.items()) {
+                KeyValue kv;
+                kv.key = v.getString("key");
+                kv.value = v.getString("value");
+                kv.enabled = !v.getBool("disabled", false);
+                if (!kv.key.empty()) collection.variables.push_back(kv);
+            }
+        }
         if (json.find("item")) {
             const Json items = json.getArray("item");
             for (const auto& it : items.items()) {
                 collection.children.push_back(parsePostmanItem(it));
             }
         }
+        autoMapLocalUrl();
         return collection;
     }
+
     const Json root = json.find("collection") ? json.getObject("collection") : json;
     collection.version = static_cast<int>(json.getInt("version", 1));
     collection.id = root.getString("id");
     if (collection.id.empty()) collection.id = newId("collection");
     collection.name = root.getString("name", "Collection");
+
+    const Json auth = root.getObject("auth");
+    collection.authType = authTypeFromName(auth.getString("type", "none"));
+    collection.username = auth.getString("username");
+    collection.password = auth.getString("password");
+    collection.token = auth.getString("token");
+
     collection.variables = keyValuesFromJson(root.getArray("variables"), true);
     const Json children = root.getArray("children");
     for (const auto& child : children.items()) collection.children.push_back(nodeFromJson(child));
+    autoMapLocalUrl();
     return collection;
 }
 
@@ -783,6 +914,72 @@ CollectionNode duplicateNode(const CollectionNode& node) {
     return copy;
 }
 
+bool moveNodeCrossCollection(Collection& sourceCol, Collection& destCol, const std::string& nodeId, const std::string& newParentId, int index) {
+    CollectionNode* node = findNode(sourceCol, nodeId);
+    if (!node) return false;
+
+    if (sourceCol.id == destCol.id) {
+        return moveNode(sourceCol, nodeId, newParentId, index);
+    }
+
+    if (!newParentId.empty()) {
+        CollectionNode* parent = findNode(destCol, newParentId);
+        if (!parent || parent->type != CollectionNode::Type::Folder) return false;
+    }
+
+    CollectionNode copy = *node;
+    if (!removeNode(sourceCol, nodeId)) return false;
+    return insertNode(destCol, newParentId, std::move(copy), index) != nullptr;
+}
+
+static bool collectParentFolderPath(const std::vector<CollectionNode>& nodes, const std::string& targetId, std::vector<const CollectionNode*>& path) {
+    for (const auto& node : nodes) {
+        if (node.id == targetId) return true;
+        if (node.type == CollectionNode::Type::Folder) {
+            path.push_back(&node);
+            if (collectParentFolderPath(node.children, targetId, path)) return true;
+            path.pop_back();
+        }
+    }
+    return false;
+}
+
+ResolvedAuth resolveEffectiveAuth(const Collection& collection, const std::string& requestNodeId, const RequestModel& request) {
+    ResolvedAuth res;
+    if (request.authType != AuthType::Inherit) {
+        res.type = request.authType;
+        res.username = request.username;
+        res.password = request.password;
+        res.token = request.token;
+        res.sourceName = "This Request";
+        return res;
+    }
+
+    std::vector<const CollectionNode*> folderPath;
+    if (!requestNodeId.empty()) {
+        collectParentFolderPath(collection.children, requestNodeId, folderPath);
+    }
+
+    for (auto it = folderPath.rbegin(); it != folderPath.rend(); ++it) {
+        const CollectionNode* folder = *it;
+        if (folder && folder->authType != AuthType::Inherit) {
+            res.type = folder->authType;
+            res.username = folder->username;
+            res.password = folder->password;
+            res.token = folder->token;
+            res.sourceName = "Folder: " + folder->name;
+            return res;
+        }
+    }
+
+    res.type = collection.authType;
+    res.username = collection.username;
+    res.password = collection.password;
+    res.token = collection.token;
+    res.sourceName = "Collection: " + collection.name;
+    return res;
+}
+
 VariableMap variablesToMap(const std::vector<KeyValue>& values) {
     VariableMap map;
     for (const auto& value : values) {
@@ -878,6 +1075,7 @@ BodyLanguage bodyLanguageFromName(const std::string& name) {
 
 std::string authTypeName(AuthType type) {
     switch (type) {
+    case AuthType::Inherit: return "inherit";
     case AuthType::Basic: return "basic";
     case AuthType::Bearer: return "bearer";
     default: return "none";
@@ -885,6 +1083,7 @@ std::string authTypeName(AuthType type) {
 }
 
 AuthType authTypeFromName(const std::string& name) {
+    if (name == "inherit") return AuthType::Inherit;
     if (name == "basic") return AuthType::Basic;
     if (name == "bearer") return AuthType::Bearer;
     return AuthType::None;

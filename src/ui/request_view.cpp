@@ -7,6 +7,7 @@
 #include "ui/request_view.h"
 
 #include <commctrl.h>
+#include <richedit.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -92,6 +93,7 @@ HWND RequestView::create(HWND parent, int id) {
                               L"One header per line, e.g. X-Api-Key: 123", true, true);
 
     auth_ = createDropdown(hwnd_, 2101);
+    dropdownAdd(auth_, L"Inherit auth from parent");
     dropdownAdd(auth_, L"No Auth");
     dropdownAdd(auth_, L"Basic Auth");
     dropdownAdd(auth_, L"Bearer Token");
@@ -243,8 +245,8 @@ void RequestView::updatePage() {
     if (auth_) ShowWindow(auth_, auth ? SW_SHOW : SW_HIDE);
 
     const int selection = auth_ ? dropdownGetCurSel(auth_) : 0;
-    const bool basic = auth && selection == 1;
-    const bool bearer = auth && selection == 2;
+    const bool basic = auth && selection == 2;
+    const bool bearer = auth && selection == 3;
     if (user_) ShowWindow(user_, basic ? SW_SHOW : SW_HIDE);
     if (pass_) ShowWindow(pass_, basic ? SW_SHOW : SW_HIDE);
     if (token_) ShowWindow(token_, bearer ? SW_SHOW : SW_HIDE);
@@ -293,19 +295,29 @@ void RequestView::paint() {
         label(L"Authentication type", x, contentRect_.top + t.scale(14));
 
         const int selection = auth_ ? dropdownGetCurSel(auth_) : 0;
-        if (selection == 1) {
-            label(L"Username", x, contentRect_.top + t.scale(88));
-            label(L"Password", x, contentRect_.top + t.scale(152));
-            drawInput(dc, userRect_, focusedEdit_ == user_);
-            drawInput(dc, passRect_, focusedEdit_ == pass_);
-        } else if (selection == 2) {
-            label(L"Token", x, contentRect_.top + t.scale(88));
-            drawInput(dc, tokenRect_, focusedEdit_ == token_);
-        } else {
+        if (selection == 0) {
+            RECT hint = {x, contentRect_.top + t.scale(88),
+                         contentRect_.right - t.scale(16), contentRect_.top + t.scale(160)};
+            std::wstring hintText = L"Using auth from parent: ";
+            if (!inheritedAuthHint_.empty()) {
+                hintText += inheritedAuthHint_;
+            } else {
+                hintText += L"No auth configured on parent.";
+            }
+            drawText(dc, hintText.c_str(), hint, t.fontUi, t.textMuted, DT_LEFT | DT_TOP | DT_NOPREFIX | DT_WORDBREAK);
+        } else if (selection == 1) {
             RECT hint = {x, contentRect_.top + t.scale(88),
                          contentRect_.right - t.scale(16), contentRect_.top + t.scale(130)};
             drawText(dc, L"This request will be sent without an Authorization header.",
                      hint, t.fontUi, t.textMuted, DT_LEFT | DT_TOP | DT_NOPREFIX);
+        } else if (selection == 2) {
+            label(L"Username", x, contentRect_.top + t.scale(88));
+            label(L"Password", x, contentRect_.top + t.scale(152));
+            drawInput(dc, userRect_, focusedEdit_ == user_);
+            drawInput(dc, passRect_, focusedEdit_ == pass_);
+        } else if (selection == 3) {
+            label(L"Token", x, contentRect_.top + t.scale(88));
+            drawInput(dc, tokenRect_, focusedEdit_ == token_);
         }
     }
 
@@ -336,8 +348,10 @@ void RequestView::setRequest(const RequestModel& req) {
     }
 
     int authIndex = 0;
-    if (req.authType == AuthType::Basic) authIndex = 1;
-    else if (req.authType == AuthType::Bearer) authIndex = 2;
+    if (req.authType == AuthType::Inherit) authIndex = 0;
+    else if (req.authType == AuthType::None) authIndex = 1;
+    else if (req.authType == AuthType::Basic) authIndex = 2;
+    else if (req.authType == AuthType::Bearer) authIndex = 3;
     dropdownSetCurSel(auth_, authIndex);
     setWindowTextUtf8(user_, req.username);
     setWindowTextUtf8(pass_, req.password);
@@ -402,12 +416,60 @@ RequestModel RequestView::getRequest() const {
     }
 
     const int authSel = auth_ ? dropdownGetCurSel(auth_) : 0;
-    req.authType = authSel == 1 ? AuthType::Basic : (authSel == 2 ? AuthType::Bearer : AuthType::None);
+    if (authSel == 0) req.authType = AuthType::Inherit;
+    else if (authSel == 1) req.authType = AuthType::None;
+    else if (authSel == 2) req.authType = AuthType::Basic;
+    else if (authSel == 3) req.authType = AuthType::Bearer;
     req.username = windowTextUtf8(user_);
     req.password = windowTextUtf8(pass_);
     req.token = windowTextUtf8(token_);
 
     return req;
+}
+
+void RequestView::setInheritedAuthHint(const std::wstring& hint) {
+    inheritedAuthHint_ = hint;
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void RequestView::tryFormatBodyJson() {
+    if (!body_ || syncing_) return;
+    int selIdx = dropdownGetCurSel(method_);
+    std::string method = (selIdx >= 0 && selIdx < kMethodCount) ? kMethods[selIdx] : "";
+    if (method != "POST" && method != "PUT" && method != "PATCH") {
+        return;
+    }
+    std::string text = windowTextUtf8(body_);
+    if (text.empty()) return;
+
+    std::string err;
+    Json j = Json::parse(text, &err);
+    if (!err.empty() || (!j.isObject() && !j.isArray())) {
+        return;
+    }
+    std::string formatted = j.dump(2);
+    std::wstring wideFormatted = normalizeNewlines(toWide(formatted));
+
+    std::wstring wideCurrent;
+    const int currentLen = GetWindowTextLengthW(body_);
+    if (currentLen > 0) {
+        wideCurrent.resize(static_cast<std::size_t>(currentLen));
+        GetWindowTextW(body_, &wideCurrent[0], currentLen + 1);
+    }
+    if (wideFormatted == wideCurrent) return;
+
+    CHARRANGE cr = {0, 0};
+    SendMessageW(body_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+
+    syncing_ = true;
+    richEditSetText(body_, wideFormatted);
+    richEditHighlight(body_);
+    syncing_ = false;
+
+    int newLen = GetWindowTextLengthW(body_);
+    if (cr.cpMin > newLen) cr.cpMin = newLen;
+    if (cr.cpMax > newLen) cr.cpMax = newLen;
+    SendMessageW(body_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&cr));
 }
 
 void RequestView::focusUrl(bool selectAll) {
@@ -462,6 +524,13 @@ LRESULT RequestView::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             SetFocus(url_);
         }
         return 0;
+    case WM_TIMER:
+        if (wParam == 9001) {
+            KillTimer(hwnd_, 9001);
+            tryFormatBodyJson();
+            return 0;
+        }
+        break;
     case WM_COMMAND: {
         const HWND control = reinterpret_cast<HWND>(lParam);
         const WORD notification = HIWORD(wParam);
@@ -492,8 +561,13 @@ LRESULT RequestView::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         if (notification == EN_CHANGE) {
-            if (!syncing_ && (control == url_ || control == body_ || control == headers_ || control == title_)) {
-                richEditHighlight(control);
+            if (!syncing_) {
+                if (control == url_ || control == body_ || control == headers_ || control == title_) {
+                    richEditHighlight(control);
+                }
+                if (control == body_) {
+                    SetTimer(hwnd_, 9001, 350, nullptr);
+                }
             }
             return 0;
         }

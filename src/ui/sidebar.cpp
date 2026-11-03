@@ -20,6 +20,7 @@ namespace {
 const wchar_t kSidebarClass[] = L"LitePostmanSidebar";
 const int kCommandManageEnvironments = 40004;
 const int kCommandNewRequest = 40007;
+const int kCommandNewFolder = 40008;
 const int kCommandNewCollection = 40010;
 const int kCommandRenameCollection = 40011;
 const int kCommandDeleteCollection = 40012;
@@ -27,6 +28,10 @@ const int kCommandExportCollection = 40013;
 const int kCommandRenameRequest = 40014;
 const int kCommandDuplicateRequest = 40015;
 const int kCommandDeleteRequest = 40016;
+const int kCommandMoveNode = 40017;
+const int kCommandEditAuth = 40018;
+const int kCommandRenameFolder = 40019;
+const int kCommandDeleteFolder = 40020;
 
 int countRequests(const std::vector<CollectionNode>& nodes) {
     int total = 0;
@@ -405,6 +410,7 @@ LRESULT Sidebar::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         if (PtInRect(&plusBox, point)) {
             HMENU menu = CreatePopupMenu();
             AppendMenuW(menu, MF_STRING, kCommandNewRequest, L"New Request (Ctrl+N)");
+            AppendMenuW(menu, MF_STRING, kCommandNewFolder, L"New Folder...");
             AppendMenuW(menu, MF_STRING, kCommandNewCollection, L"New Collection...");
             POINT screenPt = point;
             ClientToScreen(hwnd_, &screenPt);
@@ -441,12 +447,23 @@ LRESULT Sidebar::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
 
             if (row.collection) {
                 AppendMenuW(menu, MF_STRING, kCommandNewRequest, L"Add Request");
+                AppendMenuW(menu, MF_STRING, kCommandNewFolder, L"Add Folder...");
+                AppendMenuW(menu, MF_STRING, kCommandEditAuth, L"Edit Collection Auth...");
                 AppendMenuW(menu, MF_STRING, kCommandRenameCollection, L"Rename Collection...");
                 AppendMenuW(menu, MF_STRING, kCommandExportCollection, L"Export Collection (.json)...");
                 AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
                 AppendMenuW(menu, MF_STRING, kCommandDeleteCollection, L"Delete Collection");
+            } else if (row.folder) {
+                AppendMenuW(menu, MF_STRING, kCommandNewRequest, L"Add Request");
+                AppendMenuW(menu, MF_STRING, kCommandNewFolder, L"Add Subfolder...");
+                AppendMenuW(menu, MF_STRING, kCommandEditAuth, L"Edit Folder Auth...");
+                AppendMenuW(menu, MF_STRING, kCommandRenameFolder, L"Rename Folder...");
+                AppendMenuW(menu, MF_STRING, kCommandMoveNode, L"Move Folder...");
+                AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+                AppendMenuW(menu, MF_STRING, kCommandDeleteFolder, L"Delete Folder");
             } else {
                 AppendMenuW(menu, MF_STRING, kCommandRenameRequest, L"Rename Request...");
+                AppendMenuW(menu, MF_STRING, kCommandMoveNode, L"Move Request...");
                 AppendMenuW(menu, MF_STRING, kCommandDuplicateRequest, L"Duplicate Request");
                 AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
                 AppendMenuW(menu, MF_STRING, kCommandDeleteRequest, L"Delete Request");
@@ -455,6 +472,7 @@ LRESULT Sidebar::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             contextCollection_.clear();
             contextNode_.clear();
             AppendMenuW(menu, MF_STRING, kCommandNewRequest, L"New Request");
+            AppendMenuW(menu, MF_STRING, kCommandNewFolder, L"New Folder...");
             AppendMenuW(menu, MF_STRING, kCommandNewCollection, L"New Collection...");
         }
 

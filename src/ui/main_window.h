@@ -66,6 +66,11 @@ private:
     void onRenameCollection();
     void onDeleteCollection();
     void onExportCollection();
+    void onNewFolder();
+    void onRenameFolder();
+    void onDeleteFolder();
+    void onMoveNode();
+    void onEditAuth();
     void onRenameRequest();
     void onDuplicateRequest();
     void onDeleteRequest();
