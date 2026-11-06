@@ -66,6 +66,7 @@ HWND RequestView::create(HWND parent, int id) {
 
     title_ = createRichEdit(hwnd_, 2006, L"Request title / name", false, false);
     saveBtn_ = createFlatButton(hwnd_, 40006, L"Save", kButtonSecondary);
+    curlBtn_ = createFlatButton(hwnd_, 40021, L"Copy cURL", kButtonGhost);
 
     method_ = createDropdown(hwnd_, 2001);
     for (int i = 0; i < kMethodCount; ++i) {
@@ -85,6 +86,17 @@ HWND RequestView::create(HWND parent, int id) {
     tabSetCurSel(tabs_, 0);
 
     beautifyBtn_ = createFlatButton(hwnd_, 2007, L"Beautify", kButtonGhost);
+    minifyBtn_ = createFlatButton(hwnd_, 2008, L"Minify", kButtonGhost);
+    findBtn_ = createFlatButton(hwnd_, 2009, L"Find", kButtonGhost);
+
+    findEdit_ = CreateWindowExW(0, WC_EDITW, L"", WS_CHILD | ES_AUTOHSCROLL,
+                                0, 0, 160, 24, hwnd_,
+                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(2010)),
+                                GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(findEdit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"Find in body..."));
+    findPrevBtn_ = createFlatButton(hwnd_, 2011, L"\u25B2", kButtonGhost);
+    findNextBtn_ = createFlatButton(hwnd_, 2012, L"\u25BC", kButtonGhost);
+    findCloseBtn_ = createFlatButton(hwnd_, 2013, L"\u2715", kButtonGhost);
 
     body_ = createRichEdit(hwnd_, 2004,
                            L"Raw request body - JSON, text, XML...", true, true);
@@ -132,8 +144,15 @@ void RequestView::applyFonts() {
     for (HWND edit : rich) richEditSetTheme(edit);
 
     if (saveBtn_) setButtonBackdrop(saveBtn_, t.surface);
+    if (curlBtn_) setButtonBackdrop(curlBtn_, t.surface);
     if (sendBtn_) setButtonBackdrop(sendBtn_, t.surface);
     if (beautifyBtn_) setButtonBackdrop(beautifyBtn_, t.surface);
+    if (minifyBtn_) setButtonBackdrop(minifyBtn_, t.surface);
+    if (findBtn_) setButtonBackdrop(findBtn_, t.surface);
+    if (findPrevBtn_) setButtonBackdrop(findPrevBtn_, t.surface);
+    if (findNextBtn_) setButtonBackdrop(findNextBtn_, t.surface);
+    if (findCloseBtn_) setButtonBackdrop(findCloseBtn_, t.surface);
+    if (findEdit_) SendMessageW(findEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(t.fontUi), TRUE);
     if (tabs_) tabSetBackdrop(tabs_, t.surface);
     if (method_) dropdownSetBackdrop(method_, t.surface);
     if (auth_) dropdownSetBackdrop(auth_, t.surface);
@@ -162,12 +181,13 @@ void RequestView::layout() {
     const int rowH = t.scale(36);
     const int methodW = t.scale(112);
     const int sendW = t.scale(96);
-    const int saveW = t.scale(78);
     const int singleEditH = t.scale(20);
 
-    // Row 0: Request Title & Save button
+    // Row 0: Request Title & Save button & Copy cURL button
     const int titleY = pad;
-    const int titleW = std::max(t.scale(80), width - pad * 2 - saveW - gap);
+    const int saveW = t.scale(68);
+    const int curlW = t.scale(92);
+    const int titleW = std::max(t.scale(80), width - pad * 2 - saveW - curlW - gap * 2);
     titleRect_ = {pad, titleY, pad + titleW, titleY + titleH};
     if (title_) {
         const int titleOffsetY = (titleH - singleEditH) / 2;
@@ -175,7 +195,10 @@ void RequestView::layout() {
                    titleRect_.right - titleRect_.left - t.scale(20), singleEditH, TRUE);
     }
     if (saveBtn_) {
-        MoveWindow(saveBtn_, width - pad - saveW, titleY, saveW, titleH, TRUE);
+        MoveWindow(saveBtn_, width - pad - curlW - gap - saveW, titleY, saveW, titleH, TRUE);
+    }
+    if (curlBtn_) {
+        MoveWindow(curlBtn_, width - pad - curlW, titleY, curlW, titleH, TRUE);
     }
 
     // Row 1: Method, URL, Send button
@@ -193,20 +216,79 @@ void RequestView::layout() {
     if (sendBtn_) MoveWindow(sendBtn_, width - pad - sendW, rowY, sendW, rowH, TRUE);
 
     const int tabsY = rowY + rowH + t.scale(12);
-    const int beautifyW = t.scale(76);
-    if (tabs_) MoveWindow(tabs_, pad, tabsY, width - pad * 2 - beautifyW - gap, t.scale(34), TRUE);
-    if (beautifyBtn_) MoveWindow(beautifyBtn_, width - pad - beautifyW, tabsY + t.scale(2), beautifyW, t.scale(30), TRUE);
+    const int beautifyW = t.scale(68);
+    const int minifyW = t.scale(56);
+    const int findW = t.scale(48);
+    const int actionW = beautifyW + minifyW + findW + gap * 2;
+
+    const bool showTabsAndBody = height >= tabsY + t.scale(60);
+    if (tabs_) {
+        ShowWindow(tabs_, showTabsAndBody ? SW_SHOW : SW_HIDE);
+        if (showTabsAndBody) {
+            MoveWindow(tabs_, pad, tabsY, width - pad * 2 - actionW - gap, t.scale(34), TRUE);
+        }
+    }
+    if (beautifyBtn_) {
+        ShowWindow(beautifyBtn_, (showTabsAndBody && page_ == 0) ? SW_SHOW : SW_HIDE);
+        if (showTabsAndBody) {
+            MoveWindow(beautifyBtn_, width - pad - actionW, tabsY + t.scale(2), beautifyW, t.scale(30), TRUE);
+        }
+    }
+    if (minifyBtn_) {
+        ShowWindow(minifyBtn_, (showTabsAndBody && page_ == 0) ? SW_SHOW : SW_HIDE);
+        if (showTabsAndBody) {
+            MoveWindow(minifyBtn_, width - pad - minifyW - findW - gap, tabsY + t.scale(2), minifyW, t.scale(30), TRUE);
+        }
+    }
+    if (findBtn_) {
+        ShowWindow(findBtn_, (showTabsAndBody && page_ == 0) ? SW_SHOW : SW_HIDE);
+        if (showTabsAndBody) {
+            MoveWindow(findBtn_, width - pad - findW, tabsY + t.scale(2), findW, t.scale(30), TRUE);
+        }
+    }
+
+    if (!showTabsAndBody) {
+        if (body_) ShowWindow(body_, SW_HIDE);
+        if (headers_) ShowWindow(headers_, SW_HIDE);
+        if (auth_) ShowWindow(auth_, SW_HIDE);
+        if (user_) ShowWindow(user_, SW_HIDE);
+        if (pass_) ShowWindow(pass_, SW_HIDE);
+        if (token_) ShowWindow(token_, SW_HIDE);
+        if (findEdit_) ShowWindow(findEdit_, SW_HIDE);
+        if (findPrevBtn_) ShowWindow(findPrevBtn_, SW_HIDE);
+        if (findNextBtn_) ShowWindow(findNextBtn_, SW_HIDE);
+        if (findCloseBtn_) ShowWindow(findCloseBtn_, SW_HIDE);
+        return;
+    }
 
     const int contentTop = tabsY + t.scale(34) + t.scale(8);
     contentRect_ = {pad, contentTop, width - pad, std::max(contentTop + t.scale(80), height - pad)};
 
+    int bodyTop = contentRect_.top + t.scale(8);
+    if (findOpen_ && page_ == 0) {
+        const int findBarH = t.scale(28);
+        const int findY = contentRect_.top + t.scale(6);
+        const int findEditW = t.scale(150);
+        const int btnSmallW = t.scale(26);
+        int curX = contentRect_.left + t.scale(10);
+        if (findEdit_) MoveWindow(findEdit_, curX, findY + t.scale(2), findEditW, t.scale(22), TRUE);
+        curX += findEditW + t.scale(6);
+        if (findPrevBtn_) MoveWindow(findPrevBtn_, curX, findY, btnSmallW, findBarH, TRUE);
+        curX += btnSmallW + t.scale(4);
+        if (findNextBtn_) MoveWindow(findNextBtn_, curX, findY, btnSmallW, findBarH, TRUE);
+        if (findCloseBtn_) MoveWindow(findCloseBtn_, contentRect_.right - t.scale(10) - btnSmallW, findY, btnSmallW, findBarH, TRUE);
+        bodyTop += findBarH + t.scale(6);
+    }
+
     const int inset = t.scale(8);
-    RECT editRect = {contentRect_.left + inset, contentRect_.top + inset,
-                     contentRect_.right - inset, contentRect_.bottom - inset};
+    const int statusH = (page_ == 0) ? t.scale(24) : 0;
+    RECT editRect = {contentRect_.left + inset, bodyTop,
+                     contentRect_.right - inset, contentRect_.bottom - inset - statusH};
     if (body_) MoveWindow(body_, editRect.left, editRect.top,
                           editRect.right - editRect.left, editRect.bottom - editRect.top, TRUE);
-    if (headers_) MoveWindow(headers_, editRect.left, editRect.top,
-                             editRect.right - editRect.left, editRect.bottom - editRect.top, TRUE);
+    if (headers_) MoveWindow(headers_, contentRect_.left + inset, contentRect_.top + inset,
+                             contentRect_.right - contentRect_.left - inset * 2,
+                             contentRect_.bottom - contentRect_.top - inset * 2, TRUE);
 
     const int authX = contentRect_.left + t.scale(16);
     const int fieldW = std::min(t.scale(420), static_cast<int>(contentRect_.right) - authX - t.scale(16));
@@ -239,6 +321,14 @@ void RequestView::updatePage() {
     const bool headers = page_ == 1;
     const bool auth = page_ == 2;
     if (beautifyBtn_) ShowWindow(beautifyBtn_, body ? SW_SHOW : SW_HIDE);
+    if (minifyBtn_) ShowWindow(minifyBtn_, body ? SW_SHOW : SW_HIDE);
+    if (findBtn_) ShowWindow(findBtn_, body ? SW_SHOW : SW_HIDE);
+
+    const bool showFind = body && findOpen_;
+    if (findEdit_) ShowWindow(findEdit_, showFind ? SW_SHOW : SW_HIDE);
+    if (findPrevBtn_) ShowWindow(findPrevBtn_, showFind ? SW_SHOW : SW_HIDE);
+    if (findNextBtn_) ShowWindow(findNextBtn_, showFind ? SW_SHOW : SW_HIDE);
+    if (findCloseBtn_) ShowWindow(findCloseBtn_, showFind ? SW_SHOW : SW_HIDE);
 
     if (body_) ShowWindow(body_, body ? SW_SHOW : SW_HIDE);
     if (headers_) ShowWindow(headers_, headers ? SW_SHOW : SW_HIDE);
@@ -251,6 +341,9 @@ void RequestView::updatePage() {
     if (pass_) ShowWindow(pass_, basic ? SW_SHOW : SW_HIDE);
     if (token_) ShowWindow(token_, bearer ? SW_SHOW : SW_HIDE);
 
+    if (body) updateJsonStatus();
+
+    layout();
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -277,6 +370,12 @@ void RequestView::paint() {
 
     drawInput(dc, titleRect_, focusedEdit_ == title_);
     drawInput(dc, urlRect_, focusedEdit_ == url_);
+
+    const int tabsY = t.scale(16) + t.scale(36) + t.scale(8) + t.scale(36) + t.scale(12);
+    if (rc.bottom < tabsY + t.scale(60)) {
+        EndPaint(hwnd_, &ps);
+        return;
+    }
 
     const COLORREF innerBg = page_ == 2 ? t.surface : t.codeBg;
     fillRound(dc, contentRect_, t.scale(8), innerBg);
@@ -319,6 +418,26 @@ void RequestView::paint() {
             label(L"Token", x, contentRect_.top + t.scale(88));
             drawInput(dc, tokenRect_, focusedEdit_ == token_);
         }
+    } else if (page_ == 0) {
+        const int statusY = contentRect_.bottom - t.scale(22);
+        RECT statusRc = {contentRect_.left + t.scale(10), statusY, contentRect_.right - t.scale(10), contentRect_.bottom - t.scale(2)};
+        COLORREF statusCol = jsonValid_ ? t.success : (jsonStatusText_.find(L"empty") != std::string::npos ? t.textMuted : t.warning);
+        drawText(dc, jsonStatusText_, statusRc, t.fontSmall, statusCol, DT_LEFT | DT_VCENTER | DT_NOPREFIX);
+
+        std::wstring caretInfo = L"Ln " + std::to_wstring(caretLine_) + L", Col " + std::to_wstring(caretCol_);
+        drawText(dc, caretInfo, statusRc, t.fontSmall, t.textMuted, DT_RIGHT | DT_VCENTER | DT_NOPREFIX);
+
+        if (findOpen_) {
+            std::wstring matchText;
+            if (findMatchTotal_ > 0) {
+                matchText = std::to_wstring(findMatchCur_) + L" of " + std::to_wstring(findMatchTotal_);
+            } else {
+                matchText = L"No matches";
+            }
+            RECT matchRc = {contentRect_.left + t.scale(230), contentRect_.top + t.scale(6),
+                            contentRect_.right - t.scale(42), contentRect_.top + t.scale(34)};
+            drawText(dc, matchText, matchRc, t.fontSmall, t.textMuted, DT_LEFT | DT_VCENTER | DT_NOPREFIX);
+        }
     }
 
     EndPaint(hwnd_, &ps);
@@ -359,6 +478,7 @@ void RequestView::setRequest(const RequestModel& req) {
 
     syncing_ = false;
     updatePage();
+    updateJsonStatus();
 }
 
 RequestModel RequestView::getRequest() const {
@@ -470,6 +590,66 @@ void RequestView::tryFormatBodyJson() {
     if (cr.cpMin > newLen) cr.cpMin = newLen;
     if (cr.cpMax > newLen) cr.cpMax = newLen;
     SendMessageW(body_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&cr));
+    updateJsonStatus();
+}
+
+void RequestView::updateJsonStatus() {
+    std::string text = windowTextUtf8(body_);
+    if (text.empty()) {
+        jsonValid_ = true;
+        jsonStatusText_ = L"JSON (empty)";
+    } else {
+        int lines = 1;
+        for (char c : text) if (c == '\n') lines++;
+        std::string err;
+        int errLine = 1, errCol = 1;
+        if (Json::validate(text, &err, &errLine, &errCol)) {
+            jsonValid_ = true;
+            std::string sizeStr;
+            if (text.size() < 1024) sizeStr = std::to_string(text.size()) + " B";
+            else sizeStr = std::to_string(text.size() / 1024) + " KB";
+            jsonStatusText_ = L"\u2713 Valid JSON \u2022 " + std::to_wstring(lines) + L" lines \u2022 " + toWide(sizeStr);
+        } else {
+            jsonValid_ = false;
+            std::wstring wErr = toWide(err);
+            if (wErr.size() > 50) wErr = wErr.substr(0, 47) + L"...";
+            jsonStatusText_ = L"\u26A0 " + wErr;
+        }
+    }
+
+    if (body_) {
+        DWORD start = 0, end = 0;
+        SendMessageW(body_, EM_GETSEL, reinterpret_cast<WPARAM>(&start), reinterpret_cast<LPARAM>(&end));
+        LRESULT lineIdx = SendMessageW(body_, EM_LINEFROMCHAR, start, 0);
+        LRESULT lineStartChar = SendMessageW(body_, EM_LINEINDEX, lineIdx, 0);
+        caretLine_ = static_cast<int>(lineIdx) + 1;
+        caretCol_ = static_cast<int>(start - lineStartChar) + 1;
+    }
+
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void RequestView::toggleFind(bool open) {
+    findOpen_ = open;
+    const bool show = findOpen_ && (page_ == 0);
+    if (findEdit_) ShowWindow(findEdit_, show ? SW_SHOW : SW_HIDE);
+    if (findPrevBtn_) ShowWindow(findPrevBtn_, show ? SW_SHOW : SW_HIDE);
+    if (findNextBtn_) ShowWindow(findNextBtn_, show ? SW_SHOW : SW_HIDE);
+    if (findCloseBtn_) ShowWindow(findCloseBtn_, show ? SW_SHOW : SW_HIDE);
+    layout();
+    if (show && findEdit_) {
+        SetFocus(findEdit_);
+        SendMessageW(findEdit_, EM_SETSEL, 0, -1);
+    } else if (body_) {
+        SetFocus(body_);
+    }
+}
+
+void RequestView::doFind(bool forward) {
+    if (!findEdit_ || !body_) return;
+    std::wstring q = windowTextW(findEdit_);
+    richEditFindText(body_, q, forward, false, &findMatchCur_, &findMatchTotal_);
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void RequestView::focusUrl(bool selectAll) {
@@ -539,6 +719,35 @@ LRESULT RequestView::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             std::string formatted = Json::format(text);
             richEditSetText(body_, normalizeNewlines(toWide(formatted)));
             richEditHighlight(body_);
+            updateJsonStatus();
+            return 0;
+        }
+        if (control == minifyBtn_ && notification == BN_CLICKED) {
+            std::string text = windowTextUtf8(body_);
+            std::string minified = Json::minify(text);
+            richEditSetText(body_, normalizeNewlines(toWide(minified)));
+            richEditHighlight(body_);
+            updateJsonStatus();
+            return 0;
+        }
+        if (control == findBtn_ && notification == BN_CLICKED) {
+            toggleFind(!findOpen_);
+            return 0;
+        }
+        if (control == findNextBtn_ && notification == BN_CLICKED) {
+            doFind(true);
+            return 0;
+        }
+        if (control == findPrevBtn_ && notification == BN_CLICKED) {
+            doFind(false);
+            return 0;
+        }
+        if (control == findCloseBtn_ && notification == BN_CLICKED) {
+            toggleFind(false);
+            return 0;
+        }
+        if (LOWORD(wParam) == kCommandToggleFind) {
+            toggleFind(true);
             return 0;
         }
         if (control == auth_ && notification == CBN_SELCHANGE) {
@@ -561,11 +770,16 @@ LRESULT RequestView::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         if (notification == EN_CHANGE) {
+            if (control == findEdit_) {
+                doFind(true);
+                return 0;
+            }
             if (!syncing_) {
                 if (control == url_ || control == body_ || control == headers_ || control == title_) {
                     richEditHighlight(control);
                 }
                 if (control == body_) {
+                    updateJsonStatus();
                     SetTimer(hwnd_, 9001, 350, nullptr);
                 }
             }

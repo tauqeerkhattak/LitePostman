@@ -60,7 +60,16 @@ public:
 private:
     bool fail(const std::string& message) {
         if (error_.empty()) {
-            error_ = message + " at byte " + std::to_string(pos_);
+            int line = 1, col = 1;
+            for (std::size_t i = 0; i < pos_ && i < text_.size(); ++i) {
+                if (text_[i] == '\n') {
+                    line++;
+                    col = 1;
+                } else if (text_[i] != '\r') {
+                    col++;
+                }
+            }
+            error_ = message + " at line " + std::to_string(line) + ", col " + std::to_string(col);
         }
         return false;
     }
@@ -533,6 +542,49 @@ std::string Json::format(const std::string& input, int indent) {
         return j.dump(indent);
     }
     return input;
+}
+
+std::string Json::minify(const std::string& input) {
+    if (input.empty()) return input;
+    std::size_t start = input.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return input;
+    if (input[start] != '{' && input[start] != '[') return input;
+
+    std::string err;
+    Json j = Json::parse(input, &err);
+    if (err.empty() && (j.isObject() || j.isArray())) {
+        return j.dump(-1);
+    }
+    return input;
+}
+
+bool Json::validate(const std::string& input, std::string* error, int* errLine, int* errCol) {
+    if (input.empty()) return true;
+    std::size_t start = input.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return true;
+    if (input[start] != '{' && input[start] != '[') {
+        if (error) *error = "JSON root must be an object or array";
+        if (errLine) *errLine = 1;
+        if (errCol) *errCol = static_cast<int>(start + 1);
+        return false;
+    }
+    std::string err;
+    Json j = Json::parse(input, &err);
+    if (!err.empty()) {
+        if (error) *error = err;
+        if (errLine || errCol) {
+            std::size_t lPos = err.find("line ");
+            if (lPos != std::string::npos && errLine) {
+                *errLine = std::atoi(err.c_str() + lPos + 5);
+            }
+            std::size_t cPos = err.find("col ");
+            if (cPos != std::string::npos && errCol) {
+                *errCol = std::atoi(err.c_str() + cPos + 4);
+            }
+        }
+        return false;
+    }
+    return true;
 }
 
 } // namespace lite

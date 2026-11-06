@@ -15,6 +15,8 @@
 #include <ctime>
 #include <functional>
 #include <memory>
+#include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -903,7 +905,7 @@ bool MainWindow::darkFromSettings() const {
 bool MainWindow::create() {
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(WNDCLASSEXW);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     wc.lpfnWndProc = MainWindow::wndProc;
     wc.hInstance = instance_;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -1072,7 +1074,8 @@ void MainWindow::layout() {
     const Theme& t = theme();
 
     const int headerH = t.scale(56);
-    const int gap = t.scale(12);
+    const int gap = t.scale(10);
+    const int splitterH = t.scale(8);
 
     int sidebarWidth = settings_.sidebarWidth > 0 ? settings_.sidebarWidth : t.scale(272);
     sidebarWidth = std::max(t.scale(220), std::min(sidebarWidth, width - t.scale(520)));
@@ -1081,17 +1084,30 @@ void MainWindow::layout() {
     const int contentX = sidebarWidth + gap;
     const int contentW = width - contentX - gap;
     const int contentY = headerH + gap;
+    const int totalContentH = height - contentY - gap;
 
-    int responseHeight = settings_.responseHeight > 0 ? settings_.responseHeight : t.scale(290);
-    responseHeight = std::max(t.scale(160), std::min(responseHeight, height - contentY - t.scale(300)));
-    int requestHeight = height - contentY - responseHeight - gap - gap;
-    if (requestHeight < t.scale(220)) {
-        requestHeight = t.scale(220);
-        responseHeight = std::max(t.scale(120), height - contentY - requestHeight - gap - gap);
+    int responseHeight = 0;
+    int requestHeight = 0;
+
+    if (responseExpanded_) {
+        requestHeight = t.scale(104);
+        responseHeight = std::max(t.scale(120), totalContentH - requestHeight - splitterH);
+    } else {
+        responseHeight = settings_.responseHeight > 0 ? settings_.responseHeight : t.scale(290);
+        const int minReqH = t.scale(180);
+        const int minRespH = t.scale(140);
+        const int maxRespH = std::max(minRespH, totalContentH - minReqH - splitterH);
+        responseHeight = std::max(minRespH, std::min(responseHeight, maxRespH));
+        requestHeight = std::max(minReqH, totalContentH - responseHeight - splitterH);
     }
 
     requestView_.resize(contentX, contentY, contentW, requestHeight);
-    responseView_.resize(contentX, contentY + requestHeight + gap, contentW, responseHeight);
+
+    const int splitterY = contentY + requestHeight;
+    splitterRect_ = {contentX, splitterY, contentX + contentW, splitterY + splitterH};
+
+    responseView_.resize(contentX, splitterY + splitterH, contentW, responseHeight);
+    responseView_.setExpanded(responseExpanded_);
 
     const int buttonH = t.scale(32);
     const int buttonY = (headerH - buttonH) / 2;
@@ -1146,6 +1162,16 @@ void MainWindow::paint() {
                     logo.right + t.scale(12) + titleSize.cx + t.scale(80), headerH};
     drawText(dc, L"v1.0", version, t.fontSmall, t.textFaint,
              DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+
+    if (splitterRect_.right > splitterRect_.left && splitterRect_.bottom > splitterRect_.top) {
+        fillRect(dc, splitterRect_, t.bg);
+        const int gripW = t.scale(44);
+        const int gripH = t.scale(3);
+        const int gripX = splitterRect_.left + (splitterRect_.right - splitterRect_.left - gripW) / 2;
+        const int gripY = splitterRect_.top + (splitterRect_.bottom - splitterRect_.top - gripH) / 2;
+        RECT gripRect = {gripX, gripY, gripX + gripW, gripY + gripH};
+        fillRound(dc, gripRect, t.scale(2), draggingResponseSplitter_ ? t.accent : t.border);
+    }
 
     EndPaint(hwnd_, &ps);
 }
@@ -1477,6 +1503,17 @@ void MainWindow::onImportCurl() {
     }
 }
 
+void MainWindow::toggleResponseExpand() {
+    responseExpanded_ = !responseExpanded_;
+    if (responseExpanded_) {
+        preExpandResponseHeight_ = settings_.responseHeight > 0 ? settings_.responseHeight : theme().scale(290);
+    } else if (preExpandResponseHeight_ > 0) {
+        settings_.responseHeight = preExpandResponseHeight_;
+    }
+    layout();
+    InvalidateRect(hwnd_, nullptr, TRUE);
+}
+
 void MainWindow::onExportCurl() {
     RequestModel request = requestView_.getRequest();
     const VariableMap global = variablesToMap(settings_.globalVariables);
@@ -1493,11 +1530,95 @@ void MainWindow::onExportCurl() {
 
     CurlExportOptions options;
     options.target = CurlTarget::Bash;
+    options.resolveVariables = true;
     const CurlExportResult result = generateCurl(request, context, options);
-    if (CurlDialogs::exportCurl(hwnd_, result.command)) {
-        MessageBoxW(hwnd_, L"Copied the request as a cURL command.", L"cURL export", MB_OK | MB_ICONINFORMATION);
+
+    std::string text;
+    text += "# ==============================================================================\n";
+    text += "# LitePostman cURL Export\n";
+    if (!context.activeEnvironmentName.empty()) {
+        text += "# Environment: " + context.activeEnvironmentName + "\n";
     } else {
-        MessageBoxW(hwnd_, L"Could not access the clipboard.", L"cURL export", MB_OK | MB_ICONWARNING);
+        text += "# Environment: (No active environment)\n";
+    }
+
+    std::set<std::string> usedVarNames;
+    auto scanVars = [&](const std::string& str) {
+        std::size_t pos = 0;
+        while ((pos = str.find("{{", pos)) != std::string::npos) {
+            std::size_t end = str.find("}}", pos + 2);
+            if (end == std::string::npos) break;
+            std::string name = str.substr(pos + 2, end - (pos + 2));
+            if (!name.empty()) usedVarNames.insert(name);
+            pos = end + 2;
+        }
+    };
+    scanVars(request.url);
+    for (const auto& h : request.headers) {
+        scanVars(h.key);
+        scanVars(h.value);
+    }
+    scanVars(request.username);
+    scanVars(request.password);
+    scanVars(request.token);
+    scanVars(request.rawBody);
+    for (const auto& f : request.formFields) {
+        scanVars(f.key);
+        scanVars(f.value);
+    }
+
+    if (!usedVarNames.empty()) {
+        text += "# Variables Used in Request:\n";
+        for (const auto& varName : usedVarNames) {
+            ResolvedVariable rv = resolveVariable(context, varName);
+            text += "#   {{" + varName + "}} = ";
+            if (rv.found) {
+                text += rv.value + " (" + scopeName(rv.scope) + ")\n";
+            } else if (isDynamicVariable(varName)) {
+                text += dynamicVariable(varName) + " (Dynamic)\n";
+            } else {
+                text += "(unresolved)\n";
+            }
+        }
+    } else if (!context.environment.empty()) {
+        text += "# Environment Variables:\n";
+        for (const auto& pair : context.environment) {
+            text += "#   " + pair.first + " = " + pair.second.value + "\n";
+        }
+    } else {
+        text += "# Variables: (None)\n";
+    }
+    text += "# ==============================================================================\n\n";
+
+    text += result.command;
+    text += "\n\n";
+
+    text += "# ==============================================================================\n";
+    if (responseView_.hasResponse()) {
+        std::string respStatus = responseView_.getResponseStatus();
+        if (respStatus.empty()) respStatus = "Completed";
+        text += "# Response Body (" + respStatus + "):\n";
+        text += "# ==============================================================================\n";
+        std::string respBody = responseView_.getResponseBody();
+        if (respBody.empty()) {
+            text += "# (Empty response body)\n";
+        } else {
+            std::istringstream stream(respBody);
+            std::string line;
+            while (std::getline(stream, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                text += "# " + line + "\n";
+            }
+        }
+    } else {
+        text += "# Response Body: (No response received yet)\n";
+        text += "# ==============================================================================\n";
+    }
+
+    if (CurlDialogs::exportCurl(hwnd_, text)) {
+        MessageBoxW(hwnd_, L"Copied cURL command with variables and response body to clipboard.", L"cURL Export", MB_OK | MB_ICONINFORMATION);
+    } else {
+        MessageBoxW(hwnd_, L"Could not access the clipboard.", L"cURL Export", MB_OK | MB_ICONWARNING);
     }
 }
 
@@ -2119,11 +2240,94 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         case 40018: onEditAuth(); return 0;
         case 40019: onRenameFolder(); return 0;
         case 40020: onDeleteFolder(); return 0;
+        case 40021: onExportCurl(); return 0;
         case 40100: toggleTheme(); return 0;
         case 40102: onEnvChipClick(); return 0;
+        case 1003:
+            if (HIWORD(wParam) == 1) {
+                toggleResponseExpand();
+                return 0;
+            }
+            break;
+        case 1002:
+            if (HIWORD(wParam) == 2) {
+                onExportCurl();
+                return 0;
+            }
+            break;
         default: break;
         }
         return 0;
+    case WM_SETCURSOR: {
+        if (reinterpret_cast<HWND>(wParam) == hwnd_) {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd_, &pt);
+            if (draggingResponseSplitter_ ||
+                (pt.x >= splitterRect_.left && pt.x <= splitterRect_.right &&
+                 pt.y >= splitterRect_.top - 2 && pt.y <= splitterRect_.bottom + 2)) {
+                SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
+                return TRUE;
+            }
+        }
+        break;
+    }
+    case WM_LBUTTONDOWN: {
+        const int x = GET_X_LPARAM(lParam);
+        const int y = GET_Y_LPARAM(lParam);
+        if (x >= splitterRect_.left && x <= splitterRect_.right &&
+            y >= splitterRect_.top - 2 && y <= splitterRect_.bottom + 2) {
+            SetCapture(hwnd_);
+            draggingResponseSplitter_ = true;
+            dragStartY_ = y;
+            dragStartResponseHeight_ = settings_.responseHeight > 0 ? settings_.responseHeight : theme().scale(290);
+            InvalidateRect(hwnd_, &splitterRect_, FALSE);
+            return 0;
+        }
+        break;
+    }
+    case WM_MOUSEMOVE: {
+        if (draggingResponseSplitter_) {
+            const int y = GET_Y_LPARAM(lParam);
+            const int deltaY = y - dragStartY_;
+            int newHeight = dragStartResponseHeight_ - deltaY;
+            const Theme& t = theme();
+            const int minRespH = t.scale(120);
+            RECT rc;
+            GetClientRect(hwnd_, &rc);
+            const int headerH = t.scale(56);
+            const int gap = t.scale(10);
+            const int totalH = rc.bottom - (headerH + gap) - gap;
+            const int maxRespH = totalH - t.scale(140);
+            newHeight = std::max(minRespH, std::min(maxRespH, newHeight));
+            settings_.responseHeight = newHeight;
+            responseExpanded_ = false;
+            layout();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+        break;
+    }
+    case WM_LBUTTONUP: {
+        if (draggingResponseSplitter_) {
+            ReleaseCapture();
+            draggingResponseSplitter_ = false;
+            saveState();
+            InvalidateRect(hwnd_, &splitterRect_, FALSE);
+            return 0;
+        }
+        break;
+    }
+    case WM_LBUTTONDBLCLK: {
+        const int x = GET_X_LPARAM(lParam);
+        const int y = GET_Y_LPARAM(lParam);
+        if (x >= splitterRect_.left && x <= splitterRect_.right &&
+            y >= splitterRect_.top - 2 && y <= splitterRect_.bottom + 2) {
+            toggleResponseExpand();
+            return 0;
+        }
+        break;
+    }
     case WM_ERASEBKGND:
         return 1;
     case WM_PAINT:

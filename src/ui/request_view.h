@@ -38,21 +38,40 @@ private:
     void paint();
     void drawInput(HDC dc, const RECT& rc, bool focused) const;
     void tryFormatBodyJson();
+    void updateJsonStatus();
+    void toggleFind(bool open);
+    void doFind(bool forward);
 
     HWND hwnd_ = nullptr;
     HWND title_ = nullptr;
     HWND saveBtn_ = nullptr;
+    HWND curlBtn_ = nullptr;
     HWND method_ = nullptr;
     HWND url_ = nullptr;
     HWND sendBtn_ = nullptr;
     HWND tabs_ = nullptr;
     HWND beautifyBtn_ = nullptr;
+    HWND minifyBtn_ = nullptr;
+    HWND findBtn_ = nullptr;
     HWND body_ = nullptr;
     HWND headers_ = nullptr;
     HWND auth_ = nullptr;
     HWND user_ = nullptr;
     HWND pass_ = nullptr;
     HWND token_ = nullptr;
+
+    HWND findEdit_ = nullptr;
+    HWND findPrevBtn_ = nullptr;
+    HWND findNextBtn_ = nullptr;
+    HWND findCloseBtn_ = nullptr;
+    bool findOpen_ = false;
+    int findMatchCur_ = 0;
+    int findMatchTotal_ = 0;
+
+    bool jsonValid_ = true;
+    std::wstring jsonStatusText_;
+    int caretLine_ = 1;
+    int caretCol_ = 1;
 
     RECT titleRect_ = {};
     RECT urlRect_ = {};

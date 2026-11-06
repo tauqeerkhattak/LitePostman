@@ -75,6 +75,7 @@ private:
     void onDuplicateRequest();
     void onDeleteRequest();
     void onImportCollectionJson();
+    void toggleResponseExpand();
     void joinWorker();
 
     HINSTANCE instance_ = nullptr;
@@ -104,6 +105,13 @@ private:
     std::string currentCollectionId_;
     std::string currentNodeId_;
     HWND lastFocusedChild_ = nullptr;
+
+    bool draggingResponseSplitter_ = false;
+    int dragStartY_ = 0;
+    int dragStartResponseHeight_ = 0;
+    bool responseExpanded_ = false;
+    int preExpandResponseHeight_ = 0;
+    RECT splitterRect_ = {};
 };
 
 } // namespace ui

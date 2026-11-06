@@ -34,6 +34,8 @@ public:
     static Json parse(std::string_view text, std::string* error = nullptr);
     static Json parseFile(const std::string& utf8Path, std::string* error = nullptr);
     static std::string format(const std::string& input, int indent = 2);
+    static std::string minify(const std::string& input);
+    static bool validate(const std::string& input, std::string* error = nullptr, int* errLine = nullptr, int* errCol = nullptr);
 
     Type type() const { return type_; }
     bool isNull() const { return type_ == Type::Null; }

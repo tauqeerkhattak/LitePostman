@@ -32,6 +32,7 @@ const int kCommandMoveNode = 40017;
 const int kCommandEditAuth = 40018;
 const int kCommandRenameFolder = 40019;
 const int kCommandDeleteFolder = 40020;
+const int kCommandCopyCurl = 40021;
 
 int countRequests(const std::vector<CollectionNode>& nodes) {
     int total = 0;
@@ -465,6 +466,7 @@ LRESULT Sidebar::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 AppendMenuW(menu, MF_STRING, kCommandRenameRequest, L"Rename Request...");
                 AppendMenuW(menu, MF_STRING, kCommandMoveNode, L"Move Request...");
                 AppendMenuW(menu, MF_STRING, kCommandDuplicateRequest, L"Duplicate Request");
+                AppendMenuW(menu, MF_STRING, kCommandCopyCurl, L"Copy as cURL");
                 AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
                 AppendMenuW(menu, MF_STRING, kCommandDeleteRequest, L"Delete Request");
             }

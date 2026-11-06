@@ -5,6 +5,8 @@
 
 #include "core/models.h"
 #include "core/json.h"
+#include "core/curl_generator.h"
+#include "core/variables.h"
 
 using namespace lite;
 
@@ -179,10 +181,66 @@ void testLocalUrlMappingAndSecretExport() {
     std::cout << "[PASS] testLocalUrlMappingAndSecretExport" << std::endl;
 }
 
+void testRichJsonFeatures() {
+    // 1. Minify test
+    std::string formatted = "{\n  \"name\": \"Alice\",\n  \"age\": 30,\n  \"active\": true\n}";
+    std::string minified = Json::minify(formatted);
+    CHECK(minified == "{\"name\":\"Alice\",\"age\":30,\"active\":true}");
+
+    // 2. Validate valid JSON
+    std::string err;
+    int errLine = 0, errCol = 0;
+    bool valid = Json::validate(minified, &err, &errLine, &errCol);
+    CHECK(valid);
+    CHECK(err.empty());
+
+    // 3. Validate invalid JSON with line/column tracking
+    std::string badJson = "{\n  \"name\": \"Alice\",\n  \"bad\": \n}";
+    bool invalid = Json::validate(badJson, &err, &errLine, &errCol);
+    CHECK(!invalid);
+    CHECK(!err.empty());
+    CHECK(errLine == 4); // Line where error occurs
+    CHECK(err.find("line") != std::string::npos);
+
+    std::cout << "[PASS] testRichJsonFeatures" << std::endl;
+}
+
+void testCurlExportWithVariablesAndResponseBody() {
+    RequestModel req;
+    req.method = "POST";
+    req.url = "{{baseUrl}}/api/login";
+    req.authType = AuthType::Bearer;
+    req.token = "{{token}}";
+    req.headers.push_back(KeyValue{"X-Custom", "Val-{{username}}", true});
+    req.bodyMode = BodyMode::Raw;
+    req.rawBody = "{\"user\": \"{{username}}\"}";
+
+    VariableContext ctx;
+    ctx.activeEnvironmentName = "Staging";
+    ctx.environment["baseUrl"] = Variable{"https://staging.api.com", false};
+    ctx.environment["token"] = Variable{"secret_jwt_xyz", true};
+    ctx.environment["username"] = Variable{"admin", false};
+
+    CurlExportOptions opts;
+    opts.target = CurlTarget::Bash;
+    opts.resolveVariables = true;
+
+    CurlExportResult res = generateCurl(req, ctx, opts);
+    CHECK(res.command.find("https://staging.api.com/api/login") != std::string::npos);
+    CHECK(res.command.find("Bearer secret_jwt_xyz") != std::string::npos);
+    CHECK(res.command.find("Val-admin") != std::string::npos);
+    CHECK(res.command.find("admin") != std::string::npos);
+    CHECK(res.command.find("{{") == std::string::npos);
+
+    std::cout << "[PASS] testCurlExportWithVariablesAndResponseBody" << std::endl;
+}
+
 int main() {
     testAuthWaterfall();
     testCrossCollectionMove();
     testLocalUrlMappingAndSecretExport();
+    testRichJsonFeatures();
+    testCurlExportWithVariablesAndResponseBody();
     std::cout << "All tests passed successfully!" << std::endl;
     return 0;
 }

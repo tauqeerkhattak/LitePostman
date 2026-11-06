@@ -192,6 +192,13 @@ LRESULT CALLBACK richSubclass(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
         paintCue(hwnd, state);
         return result;
     }
+    case WM_KEYDOWN: {
+        if (wParam == 'F' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+            SendMessageW(GetParent(hwnd), WM_COMMAND, MAKEWPARAM(kCommandToggleFind, 0), reinterpret_cast<LPARAM>(hwnd));
+            return 0;
+        }
+        break;
+    }
     case WM_CHAR: {
         const LRESULT result = DefSubclassProc(hwnd, msg, wParam, lParam);
         if (wParam == L'{') {
@@ -276,8 +283,11 @@ HWND createRichEdit(HWND parent, int id, const wchar_t* cue, bool multiline, boo
 
 void richEditSetText(HWND edit, const std::wstring& text) {
     if (!edit) return;
+    const BOOL readOnly = (GetWindowLongPtrW(edit, GWL_STYLE) & ES_READONLY) != 0;
+    if (readOnly) SendMessageW(edit, EM_SETREADONLY, FALSE, 0);
     SetWindowTextW(edit, text.c_str());
     richEditHighlight(edit);
+    if (readOnly) SendMessageW(edit, EM_SETREADONLY, TRUE, 0);
     InvalidateRect(edit, nullptr, FALSE);
 }
 
@@ -319,6 +329,9 @@ void richEditHighlight(HWND edit) {
     CHARRANGE previous = {0, 0};
     SendMessageW(edit, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&previous));
 
+    SendMessageW(edit, WM_SETREDRAW, FALSE, 0);
+    SendMessageW(edit, EM_HIDESELECTION, TRUE, 0);
+
     CHARFORMAT2W base = {};
     base.cbSize = sizeof(base);
     base.dwMask = CFM_COLOR | CFM_BOLD;
@@ -332,31 +345,177 @@ void richEditHighlight(HWND edit) {
         GetWindowTextW(edit, text.data(), length + 1);
         text.resize(static_cast<std::size_t>(length));
 
-        std::size_t position = 0;
-        while (position < text.size()) {
-            const std::size_t start = text.find(L"{{", position);
-            if (start == std::wstring::npos) break;
-            const std::size_t end = text.find(L"}}", start + 2);
-            if (end == std::wstring::npos) break;
+        const COLORREF colKey = t.dark ? RGB(121, 192, 255) : RGB(10, 75, 175);
+        const COLORREF colString = t.dark ? RGB(142, 215, 142) : RGB(22, 125, 55);
+        const COLORREF colNumber = t.dark ? RGB(255, 171, 112) : RGB(185, 80, 15);
+        const COLORREF colKeyword = t.dark ? RGB(255, 123, 114) : RGB(200, 25, 45);
+        const COLORREF colVariable = t.accent;
 
-            const std::size_t newline = text.find_first_of(L"\r\n", start);
-            if (end > start + 2 && (newline == std::wstring::npos || newline > end)) {
-                CHARRANGE range = {static_cast<LONG>(start), static_cast<LONG>(end + 2)};
-                SendMessageW(edit, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&range));
-                CHARFORMAT2W variable = {};
-                variable.cbSize = sizeof(variable);
-                variable.dwMask = CFM_COLOR | CFM_BOLD;
-                variable.crTextColor = t.accent;
-                variable.dwEffects = CFE_BOLD;
-                SendMessageW(edit, EM_SETCHARFORMAT, SCF_SELECTION,
-                             reinterpret_cast<LPARAM>(&variable));
+        auto applyFormat = [&](size_t start, size_t end, COLORREF color, bool bold) {
+            if (start >= end) return;
+            CHARRANGE range = {static_cast<LONG>(start), static_cast<LONG>(end)};
+            SendMessageW(edit, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&range));
+            CHARFORMAT2W fmt = {};
+            fmt.cbSize = sizeof(fmt);
+            fmt.dwMask = CFM_COLOR | (bold ? CFM_BOLD : 0);
+            fmt.crTextColor = color;
+            fmt.dwEffects = bold ? CFE_BOLD : 0;
+            SendMessageW(edit, EM_SETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&fmt));
+        };
+
+        const size_t maxScan = std::min(text.size(), static_cast<size_t>(120000));
+        size_t i = 0;
+        while (i < maxScan) {
+            const wchar_t c = text[i];
+            if (c == L' ' || c == L'\t' || c == L'\r' || c == L'\n') {
+                ++i;
+                continue;
             }
-            position = end + 2;
+
+            // Variable {{var}}
+            if (c == L'{' && i + 1 < maxScan && text[i + 1] == L'{') {
+                size_t end = text.find(L"}}", i + 2);
+                if (end != std::wstring::npos && end < maxScan) {
+                    applyFormat(i, end + 2, colVariable, true);
+                    i = end + 2;
+                    continue;
+                }
+            }
+
+            // String literal "..."
+            if (c == L'"') {
+                size_t start = i;
+                ++i;
+                while (i < maxScan && text[i] != L'"') {
+                    if (text[i] == L'\\' && i + 1 < maxScan) i += 2;
+                    else ++i;
+                }
+                if (i < maxScan) ++i;
+                size_t strEnd = i;
+
+                // Check if followed by ':'
+                size_t look = strEnd;
+                while (look < maxScan && (text[look] == L' ' || text[look] == L'\t' || text[look] == L'\r' || text[look] == L'\n')) {
+                    ++look;
+                }
+                if (look < maxScan && text[look] == L':') {
+                    applyFormat(start, strEnd, colKey, false);
+                } else {
+                    applyFormat(start, strEnd, colString, false);
+                }
+                continue;
+            }
+
+            // Number: digit or negative digit
+            if ((c >= L'0' && c <= L'9') || (c == L'-' && i + 1 < maxScan && text[i + 1] >= L'0' && text[i + 1] <= L'9')) {
+                size_t start = i;
+                if (c == L'-') ++i;
+                while (i < maxScan && ((text[i] >= L'0' && text[i] <= L'9') || text[i] == L'.' || text[i] == L'e' || text[i] == L'E' || text[i] == L'+' || text[i] == L'-')) {
+                    ++i;
+                }
+                applyFormat(start, i, colNumber, false);
+                continue;
+            }
+
+            // Keywords: true, false, null
+            if (text.compare(i, 4, L"true") == 0 && (i + 4 >= maxScan || !iswalnum(text[i + 4]))) {
+                applyFormat(i, i + 4, colKeyword, false);
+                i += 4;
+                continue;
+            }
+            if (text.compare(i, 5, L"false") == 0 && (i + 5 >= maxScan || !iswalnum(text[i + 5]))) {
+                applyFormat(i, i + 5, colKeyword, false);
+                i += 5;
+                continue;
+            }
+            if (text.compare(i, 4, L"null") == 0 && (i + 4 >= maxScan || !iswalnum(text[i + 4]))) {
+                applyFormat(i, i + 4, colKeyword, false);
+                i += 4;
+                continue;
+            }
+
+            ++i;
         }
     }
 
     SendMessageW(edit, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&previous));
+    SendMessageW(edit, EM_HIDESELECTION, FALSE, 0);
+    SendMessageW(edit, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(edit, nullptr, FALSE);
+}
+
+bool richEditFindText(HWND edit, const std::wstring& query, bool forward, bool matchCase,
+                      int* outCurIndex, int* outTotalCount) {
+    if (!edit || query.empty()) {
+        if (outCurIndex) *outCurIndex = 0;
+        if (outTotalCount) *outTotalCount = 0;
+        return false;
+    }
+
+    const int totalLen = GetWindowTextLengthW(edit);
+    if (totalLen <= 0) {
+        if (outCurIndex) *outCurIndex = 0;
+        if (outTotalCount) *outTotalCount = 0;
+        return false;
+    }
+
+    std::wstring text(static_cast<std::size_t>(totalLen) + 1, L'\0');
+    GetWindowTextW(edit, text.data(), totalLen + 1);
+    text.resize(static_cast<std::size_t>(totalLen));
+
+    std::wstring searchLower = query;
+    std::wstring textLower = text;
+    if (!matchCase) {
+        for (auto& ch : searchLower) ch = static_cast<wchar_t>(towlower(ch));
+        for (auto& ch : textLower) ch = static_cast<wchar_t>(towlower(ch));
+    }
+
+    std::vector<size_t> matches;
+    size_t pos = 0;
+    while ((pos = textLower.find(searchLower, pos)) != std::wstring::npos) {
+        matches.push_back(pos);
+        pos += searchLower.size();
+    }
+
+    if (outTotalCount) *outTotalCount = static_cast<int>(matches.size());
+    if (matches.empty()) {
+        if (outCurIndex) *outCurIndex = 0;
+        return false;
+    }
+
+    CHARRANGE sel = {0, 0};
+    SendMessageW(edit, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&sel));
+
+    int targetIdx = 0;
+    if (forward) {
+        auto it = std::lower_bound(matches.begin(), matches.end(), static_cast<size_t>(sel.cpMax));
+        if (it != matches.end()) {
+            targetIdx = static_cast<int>(std::distance(matches.begin(), it));
+        } else {
+            targetIdx = 0;
+        }
+    } else {
+        int found = -1;
+        for (int idx = static_cast<int>(matches.size()) - 1; idx >= 0; --idx) {
+            if (matches[static_cast<size_t>(idx)] < static_cast<size_t>(sel.cpMin)) {
+                found = idx;
+                break;
+            }
+        }
+        if (found >= 0) {
+            targetIdx = found;
+        } else {
+            targetIdx = static_cast<int>(matches.size()) - 1;
+        }
+    }
+
+    size_t matchPos = matches[static_cast<size_t>(targetIdx)];
+    CHARRANGE targetSel = {static_cast<LONG>(matchPos), static_cast<LONG>(matchPos + query.size())};
+    SendMessageW(edit, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&targetSel));
+    SendMessageW(edit, EM_SCROLLCARET, 0, 0);
+
+    if (outCurIndex) *outCurIndex = targetIdx + 1;
+    return true;
 }
 
 void richEditSetVariableProvider(VariableListProvider provider) {

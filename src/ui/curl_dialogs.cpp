@@ -9,6 +9,7 @@
 #include <commctrl.h>
 #include <string>
 #include <vector>
+#include "ui/util.h"
 
 namespace lite {
 namespace ui {
@@ -36,18 +37,19 @@ std::string CurlDialogs::importCurl(HWND parent) {
 bool CurlDialogs::exportCurl(HWND parent, const std::string& curlText) {
     if (!OpenClipboard(parent)) return false;
     EmptyClipboard();
-    size_t len = curlText.size() + 1;
-    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, len * sizeof(wchar_t));
+    const std::wstring wide = toWide(curlText);
+    const size_t lenBytes = (wide.size() + 1) * sizeof(wchar_t);
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, lenBytes);
     if (!hMem) {
         CloseClipboard();
         return false;
     }
     wchar_t* buf = static_cast<wchar_t*>(GlobalLock(hMem));
-    // Convert UTF-8 to wide (simple)
-    for (size_t i = 0; i < curlText.size(); ++i) buf[i] = (unsigned char)curlText[i];
-    buf[curlText.size()] = 0;
-    GlobalUnlock(hMem);
-    SetClipboardData(CF_UNICODETEXT, hMem);
+    if (buf) {
+        memcpy(buf, wide.c_str(), lenBytes);
+        GlobalUnlock(hMem);
+        SetClipboardData(CF_UNICODETEXT, hMem);
+    }
     CloseClipboard();
     return true;
 }

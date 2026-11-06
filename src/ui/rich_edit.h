@@ -27,5 +27,9 @@ void richEditHighlight(HWND edit);
 void richEditSetVariableProvider(VariableListProvider provider);
 void attachVariableAutocomplete(HWND edit);
 
+const int kCommandToggleFind = 7700;
+bool richEditFindText(HWND edit, const std::wstring& query, bool forward, bool matchCase,
+                      int* outCurIndex = nullptr, int* outTotalCount = nullptr);
+
 } // namespace ui
 } // namespace lite
