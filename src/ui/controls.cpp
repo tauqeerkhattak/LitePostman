@@ -113,8 +113,8 @@ LRESULT paintButton(HWND hwnd, ButtonState* state) {
 
     const std::wstring text = windowTextW(hwnd);
     RECT textRect = rc;
-    textRect.left += t.scale(10);
-    textRect.right -= t.scale(10);
+    textRect.left += t.scale(6);
+    textRect.right -= t.scale(6);
     drawText(dc, text, textRect, t.fontUiMedium, fg,
              DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 

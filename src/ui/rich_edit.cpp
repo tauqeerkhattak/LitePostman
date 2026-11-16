@@ -322,12 +322,39 @@ void richEditSetTheme(HWND edit) {
     richEditHighlight(edit);
 }
 
+static std::wstring getRichEditInternalText(HWND edit) {
+    const int length = GetWindowTextLengthW(edit);
+    if (length <= 0) return {};
+    std::wstring rawText(static_cast<std::size_t>(length) + 1, L'\0');
+    GetWindowTextW(edit, rawText.data(), length + 1);
+    rawText.resize(static_cast<std::size_t>(length));
+
+    if (!isRichEdit(edit)) return rawText;
+
+    // RichEdit 2.0+ / Msftedit stores line breaks internally as a single '\r'
+    // for EM_EXSETSEL / EM_EXGETSEL, whereas GetWindowTextW expands each break to "\r\n".
+    // Collapsing "\r\n" to '\r' ensures 1:1 alignment between string indices and RichEdit character offsets.
+    std::wstring text;
+    text.reserve(rawText.size());
+    for (std::size_t idx = 0; idx < rawText.size(); ++idx) {
+        if (rawText[idx] == L'\r' && idx + 1 < rawText.size() && rawText[idx + 1] == L'\n') {
+            text.push_back(L'\r');
+            ++idx;
+        } else {
+            text.push_back(rawText[idx]);
+        }
+    }
+    return text;
+}
+
 void richEditHighlight(HWND edit) {
     if (!edit || !isRichEdit(edit)) return;
     const Theme& t = theme();
 
     CHARRANGE previous = {0, 0};
     SendMessageW(edit, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&previous));
+    POINT scrollPos = {0, 0};
+    SendMessageW(edit, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&scrollPos));
 
     SendMessageW(edit, WM_SETREDRAW, FALSE, 0);
     SendMessageW(edit, EM_HIDESELECTION, TRUE, 0);
@@ -339,12 +366,8 @@ void richEditHighlight(HWND edit) {
     base.dwEffects = 0;
     SendMessageW(edit, EM_SETCHARFORMAT, SCF_ALL, reinterpret_cast<LPARAM>(&base));
 
-    const int length = GetWindowTextLengthW(edit);
-    if (length > 0) {
-        std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
-        GetWindowTextW(edit, text.data(), length + 1);
-        text.resize(static_cast<std::size_t>(length));
-
+    const std::wstring text = getRichEditInternalText(edit);
+    if (!text.empty()) {
         const COLORREF colKey = t.dark ? RGB(121, 192, 255) : RGB(10, 75, 175);
         const COLORREF colString = t.dark ? RGB(142, 215, 142) : RGB(22, 125, 55);
         const COLORREF colNumber = t.dark ? RGB(255, 171, 112) : RGB(185, 80, 15);
@@ -357,7 +380,7 @@ void richEditHighlight(HWND edit) {
             SendMessageW(edit, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&range));
             CHARFORMAT2W fmt = {};
             fmt.cbSize = sizeof(fmt);
-            fmt.dwMask = CFM_COLOR | (bold ? CFM_BOLD : 0);
+            fmt.dwMask = CFM_COLOR | CFM_BOLD;
             fmt.crTextColor = color;
             fmt.dwEffects = bold ? CFE_BOLD : 0;
             SendMessageW(edit, EM_SETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&fmt));
@@ -402,6 +425,16 @@ void richEditHighlight(HWND edit) {
                     applyFormat(start, strEnd, colKey, false);
                 } else {
                     applyFormat(start, strEnd, colString, false);
+                    // Highlight any {{var}} placeholders inside string values
+                    size_t vPos = start + 1;
+                    while (vPos + 3 < strEnd) {
+                        size_t open = text.find(L"{{", vPos);
+                        if (open == std::wstring::npos || open >= strEnd) break;
+                        size_t close = text.find(L"}}", open + 2);
+                        if (close == std::wstring::npos || close + 2 > strEnd) break;
+                        applyFormat(open, close + 2, colVariable, true);
+                        vPos = close + 2;
+                    }
                 }
                 continue;
             }
@@ -439,6 +472,7 @@ void richEditHighlight(HWND edit) {
     }
 
     SendMessageW(edit, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&previous));
+    SendMessageW(edit, EM_SETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&scrollPos));
     SendMessageW(edit, EM_HIDESELECTION, FALSE, 0);
     SendMessageW(edit, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(edit, nullptr, FALSE);
@@ -452,16 +486,12 @@ bool richEditFindText(HWND edit, const std::wstring& query, bool forward, bool m
         return false;
     }
 
-    const int totalLen = GetWindowTextLengthW(edit);
-    if (totalLen <= 0) {
+    const std::wstring text = getRichEditInternalText(edit);
+    if (text.empty()) {
         if (outCurIndex) *outCurIndex = 0;
         if (outTotalCount) *outTotalCount = 0;
         return false;
     }
-
-    std::wstring text(static_cast<std::size_t>(totalLen) + 1, L'\0');
-    GetWindowTextW(edit, text.data(), totalLen + 1);
-    text.resize(static_cast<std::size_t>(totalLen));
 
     std::wstring searchLower = query;
     std::wstring textLower = text;

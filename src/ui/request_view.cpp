@@ -185,8 +185,8 @@ void RequestView::layout() {
 
     // Row 0: Request Title & Save button & Copy cURL button
     const int titleY = pad;
-    const int saveW = t.scale(68);
-    const int curlW = t.scale(92);
+    const int saveW = t.scale(72);
+    const int curlW = t.scale(96);
     const int titleW = std::max(t.scale(80), width - pad * 2 - saveW - curlW - gap * 2);
     titleRect_ = {pad, titleY, pad + titleW, titleY + titleH};
     if (title_) {
@@ -216,9 +216,9 @@ void RequestView::layout() {
     if (sendBtn_) MoveWindow(sendBtn_, width - pad - sendW, rowY, sendW, rowH, TRUE);
 
     const int tabsY = rowY + rowH + t.scale(12);
-    const int beautifyW = t.scale(68);
-    const int minifyW = t.scale(56);
-    const int findW = t.scale(48);
+    const int beautifyW = t.scale(76);
+    const int minifyW = t.scale(64);
+    const int findW = t.scale(54);
     const int actionW = beautifyW + minifyW + findW + gap * 2;
 
     const bool showTabsAndBody = height >= tabsY + t.scale(60);

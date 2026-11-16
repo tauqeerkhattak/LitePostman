@@ -165,12 +165,12 @@ void ResponseView::layout() {
 
     const int pad = t.scale(12);
     const int gap = t.scale(6);
-    const int prettyW = t.scale(56);
-    const int rawW = t.scale(46);
-    const int prevW = t.scale(62);
-    const int findW = t.scale(48);
-    const int copyW = t.scale(52);
-    const int expandW = t.scale(62);
+    const int prettyW = t.scale(66);
+    const int rawW = t.scale(52);
+    const int prevW = t.scale(72);
+    const int findW = t.scale(54);
+    const int copyW = t.scale(56);
+    const int expandW = t.scale(70);
     const int actionW = prettyW + rawW + prevW + findW + copyW + expandW + gap * 5;
 
     const int tabW = std::max(t.scale(120), static_cast<int>(rc.right) - pad * 2 - actionW - gap);
@@ -224,7 +224,6 @@ void ResponseView::setViewMode(int mode) {
         else current = previewBody_;
 
         richEditSetText(edit_, normalizeNewlines(toWide(current)));
-        if (mode == 0) richEditHighlight(edit_);
         SendMessageW(edit_, EM_SETSEL, 0, 0);
         SendMessageW(edit_, EM_SCROLLCARET, 0, 0);
     }
@@ -267,7 +266,7 @@ void ResponseView::updateTab() {
     const bool showFind = isBody && findOpen_;
     if (findEdit_) ShowWindow(findEdit_, showFind ? SW_SHOW : SW_HIDE);
     if (findPrevBtn_) ShowWindow(findPrevBtn_, showFind ? SW_SHOW : SW_HIDE);
-    if (findNextBtn_) ShowWindow(findNextBtn_, SW_HIDE);
+    if (findNextBtn_) ShowWindow(findNextBtn_, showFind ? SW_SHOW : SW_HIDE);
     if (findCloseBtn_) ShowWindow(findCloseBtn_, showFind ? SW_SHOW : SW_HIDE);
 
     layout();
@@ -282,9 +281,6 @@ void ResponseView::updateTab() {
             text = contents_[tab_];
         }
         richEditSetText(edit_, normalizeNewlines(toWide(text)));
-        if (tab_ == 0 && viewMode_ == 0) {
-            richEditHighlight(edit_);
-        }
         SendMessageW(edit_, EM_SETSEL, 0, 0);
         SendMessageW(edit_, EM_SCROLLCARET, 0, 0);
     }
