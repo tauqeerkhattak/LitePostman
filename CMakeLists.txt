@@ -51,7 +51,7 @@ if(MSVC)
   target_sources(LitePostman PRIVATE src/app.rc)
 endif()
 target_include_directories(LitePostman PRIVATE src)
-target_link_libraries(LitePostman PRIVATE litepostman_core comctl32 comdlg32 riched20 dwmapi uxtheme shlwapi winhttp)
+target_link_libraries(LitePostman PRIVATE litepostman_core comctl32 comdlg32 riched20 dwmapi uxtheme shlwapi winhttp gdiplus)
 set_target_properties(LitePostman PROPERTIES OUTPUT_NAME "LitePostman")
 if(MINGW)
   # MinGW always injects its own default-manifest.o. Build our manifest as a

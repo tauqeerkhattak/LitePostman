@@ -21,7 +21,13 @@ enum ButtonStyle {
 
 enum {
     FBM_SETSTYLE = WM_APP + 40,
-    FBM_SETBACKDROP
+    FBM_SETBACKDROP,
+    FBM_SETICONMODE
+};
+
+enum ButtonIconMode {
+    kIconNone = 0,
+    kIconSunMoon = 1
 };
 
 enum {
@@ -40,12 +46,14 @@ enum {
     TSM_RESETCONTENT,
     TSM_SETCURSEL,
     TSM_GETCURSEL,
-    TSM_SETBACKDROP
+    TSM_SETBACKDROP,
+    TSM_SETITEMTEXT
 };
 
 HWND createFlatButton(HWND parent, int id, const wchar_t* text, int style);
 void setButtonStyle(HWND button, int style);
 void setButtonBackdrop(HWND button, COLORREF color);
+void setButtonIconMode(HWND button, int iconMode);
 
 HWND createDropdown(HWND parent, int id);
 void dropdownAdd(HWND dropdown, const std::wstring& text, COLORREF color = CLR_INVALID);
@@ -61,6 +69,7 @@ void tabReset(HWND tabs);
 void tabSetCurSel(HWND tabs, int index);
 int tabGetCurSel(HWND tabs);
 void tabSetBackdrop(HWND tabs, COLORREF color);
+void tabSetText(HWND tabs, int index, const std::wstring& text);
 
 } // namespace ui
 } // namespace lite

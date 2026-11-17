@@ -56,6 +56,7 @@ private:
     HWND findPrevBtn_ = nullptr;
     HWND findNextBtn_ = nullptr;
     HWND findCloseBtn_ = nullptr;
+    RECT findBoxRect_ = {};
     bool findOpen_ = false;
     int findMatchCur_ = 0;
     int findMatchTotal_ = 0;

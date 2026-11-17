@@ -149,10 +149,10 @@ void RequestView::applyFonts() {
     if (beautifyBtn_) setButtonBackdrop(beautifyBtn_, t.surface);
     if (minifyBtn_) setButtonBackdrop(minifyBtn_, t.surface);
     if (findBtn_) setButtonBackdrop(findBtn_, t.surface);
-    if (findPrevBtn_) setButtonBackdrop(findPrevBtn_, t.surface);
-    if (findNextBtn_) setButtonBackdrop(findNextBtn_, t.surface);
-    if (findCloseBtn_) setButtonBackdrop(findCloseBtn_, t.surface);
-    if (findEdit_) SendMessageW(findEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(t.fontUi), TRUE);
+    if (findPrevBtn_) setButtonBackdrop(findPrevBtn_, t.codeBg);
+    if (findNextBtn_) setButtonBackdrop(findNextBtn_, t.codeBg);
+    if (findCloseBtn_) setButtonBackdrop(findCloseBtn_, t.codeBg);
+    if (findEdit_) SendMessageW(findEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(t.fontSmall), TRUE);
     if (tabs_) tabSetBackdrop(tabs_, t.surface);
     if (method_) dropdownSetBackdrop(method_, t.surface);
     if (auth_) dropdownSetBackdrop(auth_, t.surface);
@@ -268,16 +268,19 @@ void RequestView::layout() {
     if (findOpen_ && page_ == 0) {
         const int findBarH = t.scale(28);
         const int findY = contentRect_.top + t.scale(6);
-        const int findEditW = t.scale(150);
+        const int findEditW = t.scale(172);
         const int btnSmallW = t.scale(26);
         int curX = contentRect_.left + t.scale(10);
-        if (findEdit_) MoveWindow(findEdit_, curX, findY + t.scale(2), findEditW, t.scale(22), TRUE);
+        findBoxRect_ = {curX, findY, curX + findEditW, findY + findBarH};
+        if (findEdit_) MoveWindow(findEdit_, curX + t.scale(8), findY + t.scale(5), findEditW - t.scale(16), t.scale(18), TRUE);
         curX += findEditW + t.scale(6);
         if (findPrevBtn_) MoveWindow(findPrevBtn_, curX, findY, btnSmallW, findBarH, TRUE);
         curX += btnSmallW + t.scale(4);
         if (findNextBtn_) MoveWindow(findNextBtn_, curX, findY, btnSmallW, findBarH, TRUE);
         if (findCloseBtn_) MoveWindow(findCloseBtn_, contentRect_.right - t.scale(10) - btnSmallW, findY, btnSmallW, findBarH, TRUE);
         bodyTop += findBarH + t.scale(6);
+    } else {
+        findBoxRect_ = {};
     }
 
     const int inset = t.scale(8);
@@ -356,10 +359,9 @@ void RequestView::drawInput(HDC dc, const RECT& rc, bool focused) const {
 }
 
 void RequestView::paint() {
-    PAINTSTRUCT ps;
-    HDC dc = BeginPaint(hwnd_, &ps);
-    RECT rc;
-    GetClientRect(hwnd_, &rc);
+    DoubleBufferDC db(hwnd_);
+    HDC dc = db.dc();
+    const RECT rc = db.rect();
     const Theme& t = theme();
 
     fillRect(dc, rc, t.bg);
@@ -373,7 +375,6 @@ void RequestView::paint() {
 
     const int tabsY = t.scale(16) + t.scale(36) + t.scale(8) + t.scale(36) + t.scale(12);
     if (rc.bottom < tabsY + t.scale(60)) {
-        EndPaint(hwnd_, &ps);
         return;
     }
 
@@ -419,8 +420,11 @@ void RequestView::paint() {
             drawInput(dc, tokenRect_, focusedEdit_ == token_);
         }
     } else if (page_ == 0) {
-        const int statusY = contentRect_.bottom - t.scale(22);
-        RECT statusRc = {contentRect_.left + t.scale(10), statusY, contentRect_.right - t.scale(10), contentRect_.bottom - t.scale(2)};
+        const int statusY = contentRect_.bottom - t.scale(24);
+        drawLine(dc, contentRect_.left + t.scale(8), statusY,
+                 contentRect_.right - t.scale(8), statusY, t.border, 1);
+        RECT statusRc = {contentRect_.left + t.scale(10), statusY + t.scale(1),
+                         contentRect_.right - t.scale(10), contentRect_.bottom - t.scale(2)};
         COLORREF statusCol = jsonValid_ ? t.success : (jsonStatusText_.find(L"empty") != std::string::npos ? t.textMuted : t.warning);
         drawText(dc, jsonStatusText_, statusRc, t.fontSmall, statusCol, DT_LEFT | DT_VCENTER | DT_NOPREFIX);
 
@@ -428,24 +432,50 @@ void RequestView::paint() {
         drawText(dc, caretInfo, statusRc, t.fontSmall, t.textMuted, DT_RIGHT | DT_VCENTER | DT_NOPREFIX);
 
         if (findOpen_) {
+            drawInput(dc, findBoxRect_, focusedEdit_ == findEdit_);
             std::wstring matchText;
             if (findMatchTotal_ > 0) {
                 matchText = std::to_wstring(findMatchCur_) + L" of " + std::to_wstring(findMatchTotal_);
             } else {
                 matchText = L"No matches";
             }
-            RECT matchRc = {contentRect_.left + t.scale(230), contentRect_.top + t.scale(6),
+            RECT matchRc = {findBoxRect_.right + t.scale(68), contentRect_.top + t.scale(6),
                             contentRect_.right - t.scale(42), contentRect_.top + t.scale(34)};
             drawText(dc, matchText, matchRc, t.fontSmall, t.textMuted, DT_LEFT | DT_VCENTER | DT_NOPREFIX);
         }
     }
+}
 
-    EndPaint(hwnd_, &ps);
+void RequestView::updateTabBadges() {
+    if (!tabs_) return;
+    const std::string bodyTxt = windowTextUtf8(body_);
+    tabSetText(tabs_, 0, bodyTxt.empty() ? L"Body" : L"Body \u2022");
+
+    int headerCount = 0;
+    const std::string hdrTxt = windowTextUtf8(headers_);
+    std::size_t pos = 0;
+    while (pos < hdrTxt.size()) {
+        std::size_t end = hdrTxt.find('\n', pos);
+        if (end == std::string::npos) end = hdrTxt.size();
+        std::string line = hdrTxt.substr(pos, end - pos);
+        pos = end + 1;
+        if (line.find(':') != std::string::npos) ++headerCount;
+    }
+    tabSetText(tabs_, 1, headerCount > 0 ? (L"Headers (" + std::to_wstring(headerCount) + L")") : L"Headers");
+
+    const int authSel = auth_ ? dropdownGetCurSel(auth_) : 0;
+    tabSetText(tabs_, 2, (authSel == 2 || authSel == 3) ? L"Auth \u2022" : L"Auth");
 }
 
 void RequestView::setRequest(const RequestModel& req) {
+    if (hwnd_) KillTimer(hwnd_, 9001);
     request_ = req;
     syncing_ = true;
+
+    findOpen_ = false;
+    findMatchCur_ = 0;
+    findMatchTotal_ = 0;
+    if (findEdit_) SetWindowTextW(findEdit_, L"");
 
     if (title_) {
         richEditSetText(title_, toWide(req.name.empty() ? "Untitled Request" : req.name));
@@ -455,6 +485,9 @@ void RequestView::setRequest(const RequestModel& req) {
     if (body_) {
         std::string formatted = Json::format(req.rawBody);
         richEditSetText(body_, normalizeNewlines(toWide(formatted)));
+        SendMessageW(body_, EM_SETSEL, 0, 0);
+        POINT zero = {0, 0};
+        SendMessageW(body_, EM_SETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&zero));
     }
     if (headers_) {
         std::string text;
@@ -464,6 +497,9 @@ void RequestView::setRequest(const RequestModel& req) {
             text += header.key + ": " + header.value;
         }
         richEditSetText(headers_, toWide(text));
+        SendMessageW(headers_, EM_SETSEL, 0, 0);
+        POINT zero = {0, 0};
+        SendMessageW(headers_, EM_SETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&zero));
     }
 
     int authIndex = 0;
@@ -477,6 +513,7 @@ void RequestView::setRequest(const RequestModel& req) {
     setWindowTextUtf8(token_, req.token);
 
     syncing_ = false;
+    updateTabBadges();
     updatePage();
     updateJsonStatus();
 }
@@ -751,11 +788,13 @@ LRESULT RequestView::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         if (control == auth_ && notification == CBN_SELCHANGE) {
+            updateTabBadges();
             updatePage();
             return 0;
         }
         if (control == method_ && notification == CBN_SELCHANGE) {
             InvalidateRect(hwnd_, nullptr, FALSE);
+            SendMessageW(GetParent(hwnd_), WM_COMMAND, MAKEWPARAM(1002, 3), reinterpret_cast<LPARAM>(hwnd_));
             return 0;
         }
         if (notification == EN_SETFOCUS) {
@@ -778,9 +817,14 @@ LRESULT RequestView::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (control == url_ || control == body_ || control == headers_ || control == title_) {
                     richEditHighlight(control);
                 }
-                if (control == body_) {
+                if (control == title_) {
+                    SendMessageW(GetParent(hwnd_), WM_COMMAND, MAKEWPARAM(1002, 3), reinterpret_cast<LPARAM>(hwnd_));
+                } else if (control == body_) {
                     updateJsonStatus();
+                    updateTabBadges();
                     SetTimer(hwnd_, 9001, 350, nullptr);
+                } else if (control == headers_) {
+                    updateTabBadges();
                 }
             }
             return 0;

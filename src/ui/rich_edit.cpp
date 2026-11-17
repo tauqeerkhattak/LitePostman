@@ -275,6 +275,7 @@ HWND createRichEdit(HWND parent, int id, const wchar_t* cue, bool multiline, boo
     SetWindowSubclass(edit, richSubclass, 1, reinterpret_cast<DWORD_PTR>(state));
 
     SendMessageW(edit, EM_SETLIMITTEXT, 0, 0);
+    SendMessageW(edit, EM_SETEVENTMASK, 0, ENM_CHANGE | ENM_SELCHANGE);
     SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
                  MAKELONG(theme().scale(2), theme().scale(2)));
     richEditSetTheme(edit);
@@ -288,7 +289,7 @@ void richEditSetText(HWND edit, const std::wstring& text) {
     SetWindowTextW(edit, text.c_str());
     richEditHighlight(edit);
     if (readOnly) SendMessageW(edit, EM_SETREADONLY, TRUE, 0);
-    InvalidateRect(edit, nullptr, FALSE);
+    InvalidateRect(edit, nullptr, TRUE);
 }
 
 void richEditSetTheme(HWND edit) {
@@ -314,7 +315,7 @@ void richEditSetTheme(HWND edit) {
     format.crTextColor = t.text;
     format.dwEffects = 0;
     format.yHeight = 10 * 20;
-    lstrcpynW(format.szFaceName, mono ? L"Consolas" : L"Segoe UI", LF_FACESIZE);
+    lstrcpynW(format.szFaceName, mono ? t.monoFontName.c_str() : t.uiFontName.c_str(), LF_FACESIZE);
     SendMessageW(edit, EM_SETCHARFORMAT, SCF_ALL, reinterpret_cast<LPARAM>(&format));
     SendMessageW(edit, EM_SETCHARFORMAT, SCF_DEFAULT, reinterpret_cast<LPARAM>(&format));
 

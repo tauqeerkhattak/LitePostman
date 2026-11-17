@@ -39,6 +39,7 @@ private:
     void drawInput(HDC dc, const RECT& rc, bool focused) const;
     void tryFormatBodyJson();
     void updateJsonStatus();
+    void updateTabBadges();
     void toggleFind(bool open);
     void doFind(bool forward);
 
@@ -80,6 +81,7 @@ private:
     RECT userRect_ = {};
     RECT passRect_ = {};
     RECT tokenRect_ = {};
+    RECT findBoxRect_ = {};
 
     HWND focusedEdit_ = nullptr;
     HWND lastFocusedEdit_ = nullptr;

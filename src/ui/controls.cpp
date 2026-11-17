@@ -48,6 +48,7 @@ void notifyClick(HWND hwnd) {
 struct ButtonState {
     int style = kButtonSecondary;
     COLORREF backdrop = CLR_INVALID;
+    int iconMode = kIconNone;
     bool hover = false;
     bool pressed = false;
     bool tracking = false;
@@ -56,10 +57,9 @@ struct ButtonState {
 LRESULT CALLBACK buttonProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 LRESULT paintButton(HWND hwnd, ButtonState* state) {
-    PAINTSTRUCT ps;
-    HDC dc = BeginPaint(hwnd, &ps);
-    RECT rc;
-    GetClientRect(hwnd, &rc);
+    DoubleBufferDC db(hwnd);
+    HDC dc = db.dc();
+    const RECT rc = db.rect();
 
     const Theme& t = theme();
     const bool enabled = IsWindowEnabled(hwnd) != FALSE;
@@ -80,7 +80,7 @@ LRESULT paintButton(HWND hwnd, ButtonState* state) {
         fg = t.onAccent;
         break;
     case kButtonSecondary:
-        bg = state->pressed ? t.surfaceAlt : (state->hover ? t.surfaceHover : t.surface);
+        bg = state->pressed ? t.surfaceAlt : (state->hover ? t.surfaceHover : t.surfaceAlt);
         fg = enabled ? t.text : t.textFaint;
         drawBorder = true;
         borderColor = state->hover && enabled ? t.borderStrong : t.border;
@@ -92,11 +92,11 @@ LRESULT paintButton(HWND hwnd, ButtonState* state) {
     case kButtonGhost:
     default:
         bg = state->pressed ? t.surfaceAlt : (state->hover ? t.surfaceHover : backdrop);
-        fg = enabled ? t.textMuted : t.textFaint;
+        fg = enabled ? (state->hover ? t.text : t.textMuted) : t.textFaint;
         break;
     }
 
-    const int radius = t.scale(8);
+    const int radius = t.scale(7);
     if (state->style != kButtonGhost || state->hover || state->pressed) {
         fillRound(dc, rc, radius, bg);
     }
@@ -107,18 +107,24 @@ LRESULT paintButton(HWND hwnd, ButtonState* state) {
     }
     if (focused && enabled) {
         RECT ring = rc;
-        InflateRect(&ring, -t.scale(3), -t.scale(3));
-        strokeRound(dc, ring, radius - 2, state->style == kButtonPrimary ? t.onAccent : t.accent, 1);
+        InflateRect(&ring, -t.scale(2), -t.scale(2));
+        strokeRound(dc, ring, std::max(2, radius - 1),
+                    state->style == kButtonPrimary ? t.onAccent : t.accent, 1);
     }
 
-    const std::wstring text = windowTextW(hwnd);
-    RECT textRect = rc;
-    textRect.left += t.scale(6);
-    textRect.right -= t.scale(6);
-    drawText(dc, text, textRect, t.fontUiMedium, fg,
-             DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    if (state->iconMode == kIconSunMoon) {
+        const int cx = (rc.left + rc.right) / 2;
+        const int cy = (rc.top + rc.bottom) / 2;
+        drawSunMoonIcon(dc, cx, cy, t.scale(15), fg, t.dark);
+    } else {
+        const std::wstring text = windowTextW(hwnd);
+        RECT textRect = rc;
+        textRect.left += t.scale(6);
+        textRect.right -= t.scale(6);
+        drawText(dc, text, textRect, t.fontUiMedium, fg,
+                 DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
 
-    EndPaint(hwnd, &ps);
     return 0;
 }
 
@@ -158,6 +164,12 @@ LRESULT CALLBACK buttonProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case FBM_SETBACKDROP:
         if (state) {
             state->backdrop = static_cast<COLORREF>(wParam);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return 0;
+    case FBM_SETICONMODE:
+        if (state) {
+            state->iconMode = static_cast<int>(wParam);
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
@@ -324,10 +336,9 @@ int popupIndexAt(const PopupState* state, int y) {
 }
 
 void paintDropdown(HWND hwnd, DropdownState* state) {
-    PAINTSTRUCT ps;
-    HDC dc = BeginPaint(hwnd, &ps);
-    RECT rc;
-    GetClientRect(hwnd, &rc);
+    DoubleBufferDC db(hwnd);
+    HDC dc = db.dc();
+    const RECT rc = db.rect();
 
     const Theme& t = theme();
     const COLORREF backdrop = state->backdrop == CLR_INVALID ? t.surface : state->backdrop;
@@ -336,28 +347,33 @@ void paintDropdown(HWND hwnd, DropdownState* state) {
     RECT box = rc;
     InflateRect(&box, -1, -1);
     const bool focused = GetFocus() == hwnd;
-    fillRound(dc, box, t.scale(8), t.inputBg);
-    strokeRound(dc, box, t.scale(8), focused ? t.accent : (state->hover ? t.borderStrong : t.border),
+    fillRound(dc, box, t.scale(7), t.inputBg);
+    strokeRound(dc, box, t.scale(7), focused ? t.accent : (state->hover ? t.borderStrong : t.border),
                 focused ? 2 : 1);
 
-    RECT textRect = box;
-    textRect.left += t.scale(12);
-    textRect.right -= t.scale(32);
     const bool hasSelection = state->sel >= 0 && state->sel < static_cast<int>(state->items.size());
     const std::wstring text = hasSelection ? state->items[static_cast<std::size_t>(state->sel)]
                                            : state->placeholder;
     COLORREF color = t.textMuted;
+    COLORREF custom = CLR_INVALID;
     if (hasSelection) {
-        const COLORREF custom = state->colors[static_cast<std::size_t>(state->sel)];
+        custom = state->colors[static_cast<std::size_t>(state->sel)];
         color = custom == CLR_INVALID ? t.text : custom;
     }
+
+    RECT textRect = box;
+    if (hasSelection && custom != CLR_INVALID) {
+        drawDot(dc, box.left + t.scale(14), (box.top + box.bottom) / 2, t.scale(4), custom);
+        textRect.left += t.scale(24);
+    } else {
+        textRect.left += t.scale(12);
+    }
+    textRect.right -= t.scale(28);
     drawText(dc, text, textRect, t.fontUiMedium, color,
              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
-    drawChevron(dc, box.right - t.scale(16), (box.top + box.bottom) / 2, t.scale(8),
+    drawChevron(dc, box.right - t.scale(14), (box.top + box.bottom) / 2, t.scale(8),
                 t.textMuted, true);
-
-    EndPaint(hwnd, &ps);
 }
 
 LRESULT CALLBACK dropdownProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -470,16 +486,15 @@ LRESULT CALLBACK dropdownProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 }
 
 void paintPopup(HWND hwnd, PopupState* state) {
-    PAINTSTRUCT ps;
-    HDC dc = BeginPaint(hwnd, &ps);
-    RECT rc;
-    GetClientRect(hwnd, &rc);
+    DoubleBufferDC db(hwnd);
+    HDC dc = db.dc();
+    const RECT rc = db.rect();
 
     const Theme& t = theme();
     fillRect(dc, rc, t.surface);
     RECT border = rc;
     InflateRect(&border, -1, -1);
-    strokeRound(dc, border, t.scale(8), t.border, 1);
+    strokeRound(dc, border, t.scale(8), t.borderStrong, 1);
 
     const int rowH = t.scale(34);
     const int pad = t.scale(6);
@@ -504,8 +519,6 @@ void paintPopup(HWND hwnd, PopupState* state) {
                      DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
         }
     }
-
-    EndPaint(hwnd, &ps);
 }
 
 LRESULT CALLBACK popupProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -674,10 +687,9 @@ void notifyTabChange(HWND hwnd, int index) {
 }
 
 void paintTabs(HWND hwnd, TabState* state) {
-    PAINTSTRUCT ps;
-    HDC dc = BeginPaint(hwnd, &ps);
-    RECT rc;
-    GetClientRect(hwnd, &rc);
+    DoubleBufferDC db(hwnd);
+    HDC dc = db.dc();
+    const RECT rc = db.rect();
 
     const Theme& t = theme();
     const COLORREF backdrop = state->backdrop == CLR_INVALID ? t.surface : state->backdrop;
@@ -695,23 +707,21 @@ void paintTabs(HWND hwnd, TabState* state) {
             hoverRect.left += t.scale(4);
             hoverRect.right -= t.scale(4);
             hoverRect.top += t.scale(4);
-            hoverRect.bottom -= t.scale(4);
+            hoverRect.bottom -= t.scale(5);
             fillRound(dc, hoverRect, t.scale(6), t.surfaceHover);
         }
 
         drawText(dc, label, item, t.fontUiMedium,
-                 i == state->sel ? t.accent : (i == state->hover ? t.text : t.textMuted),
+                 i == state->sel ? t.text : (i == state->hover ? t.text : t.textMuted),
                  DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
 
         if (i == state->sel) {
-            RECT underline = {item.left + t.scale(14), rc.bottom - t.scale(3),
-                              item.right - t.scale(14), rc.bottom - t.scale(1)};
-            fillRound(dc, underline, t.scale(1), t.accent);
+            RECT underline = {item.left + t.scale(10), rc.bottom - t.scale(3),
+                              item.right - t.scale(10), rc.bottom};
+            fillRound(dc, underline, t.scale(2), t.accent);
         }
         cursor += width;
     }
-
-    EndPaint(hwnd, &ps);
 }
 
 LRESULT CALLBACK tabProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -810,6 +820,16 @@ LRESULT CALLBACK tabProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
+    case TSM_SETITEMTEXT:
+        if (state) {
+            const int index = static_cast<int>(wParam);
+            if (index >= 0 && index < static_cast<int>(state->items.size())) {
+                state->items[static_cast<std::size_t>(index)] =
+                    lParam ? reinterpret_cast<const wchar_t*>(lParam) : L"";
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+        }
+        return 0;
     case WM_GETDLGCODE:
         return DLGC_WANTARROWS;
     default:
@@ -835,6 +855,10 @@ void setButtonStyle(HWND button, int style) {
 
 void setButtonBackdrop(HWND button, COLORREF color) {
     if (button) SendMessageW(button, FBM_SETBACKDROP, static_cast<WPARAM>(color), 0);
+}
+
+void setButtonIconMode(HWND button, int iconMode) {
+    if (button) SendMessageW(button, FBM_SETICONMODE, static_cast<WPARAM>(iconMode), 0);
 }
 
 HWND createDropdown(HWND parent, int id) {
@@ -901,6 +925,10 @@ int tabGetCurSel(HWND tabs) {
 
 void tabSetBackdrop(HWND tabs, COLORREF color) {
     if (tabs) SendMessageW(tabs, TSM_SETBACKDROP, static_cast<WPARAM>(color), 0);
+}
+
+void tabSetText(HWND tabs, int index, const std::wstring& text) {
+    if (tabs) SendMessageW(tabs, TSM_SETITEMTEXT, static_cast<WPARAM>(index), reinterpret_cast<LPARAM>(text.c_str()));
 }
 
 } // namespace ui

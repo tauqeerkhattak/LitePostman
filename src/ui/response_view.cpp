@@ -134,10 +134,10 @@ void ResponseView::applyFonts() {
     if (previewBtn_) setButtonBackdrop(previewBtn_, t.surface);
     if (findBtn_) setButtonBackdrop(findBtn_, t.surface);
     if (expandBtn_) setButtonBackdrop(expandBtn_, t.surface);
-    if (findPrevBtn_) setButtonBackdrop(findPrevBtn_, t.surface);
-    if (findNextBtn_) setButtonBackdrop(findNextBtn_, t.surface);
-    if (findCloseBtn_) setButtonBackdrop(findCloseBtn_, t.surface);
-    if (findEdit_) SendMessageW(findEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(t.fontUi), TRUE);
+    if (findPrevBtn_) setButtonBackdrop(findPrevBtn_, t.codeBg);
+    if (findNextBtn_) setButtonBackdrop(findNextBtn_, t.codeBg);
+    if (findCloseBtn_) setButtonBackdrop(findCloseBtn_, t.codeBg);
+    if (findEdit_) SendMessageW(findEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(t.fontSmall), TRUE);
 
     if (tabs_) tabSetBackdrop(tabs_, t.surface);
     if (copyBtn_) setButtonBackdrop(copyBtn_, t.surface);
@@ -191,16 +191,19 @@ void ResponseView::layout() {
     if (findOpen_ && tab_ == 0 && hasResponse_) {
         const int findBarH = t.scale(28);
         const int findY = contentTop + t.scale(6);
-        const int findEditW = t.scale(150);
+        const int findEditW = t.scale(172);
         const int btnSmallW = t.scale(26);
         int findX = pad + t.scale(10);
-        if (findEdit_) MoveWindow(findEdit_, findX, findY + t.scale(2), findEditW, t.scale(22), TRUE);
+        findBoxRect_ = {findX, findY, findX + findEditW, findY + findBarH};
+        if (findEdit_) MoveWindow(findEdit_, findX + t.scale(8), findY + t.scale(5), findEditW - t.scale(16), t.scale(18), TRUE);
         findX += findEditW + t.scale(6);
         if (findPrevBtn_) MoveWindow(findPrevBtn_, findX, findY, btnSmallW, findBarH, TRUE);
         findX += btnSmallW + t.scale(4);
         if (findNextBtn_) MoveWindow(findNextBtn_, findX, findY, btnSmallW, findBarH, TRUE);
         if (findCloseBtn_) MoveWindow(findCloseBtn_, rc.right - pad - t.scale(10) - btnSmallW, findY, btnSmallW, findBarH, TRUE);
         contentTop += findBarH + t.scale(6);
+    } else {
+        findBoxRect_ = {};
     }
 
     const int statusH = (tab_ == 0 && hasResponse_) ? t.scale(24) : 0;
@@ -346,6 +349,11 @@ void ResponseView::setLoading() {
     contents_[0].clear();
     contents_[1].clear();
     contents_[2].clear();
+    jsonStatusText_.clear();
+    findOpen_ = false;
+    findMatchCur_ = 0;
+    findMatchTotal_ = 0;
+    if (findEdit_) SetWindowTextW(findEdit_, L"");
     code_ = 0;
     error_ = false;
     loading_ = true;
@@ -361,7 +369,10 @@ void ResponseView::setLoading() {
     if (findPrevBtn_) ShowWindow(findPrevBtn_, SW_HIDE);
     if (findNextBtn_) ShowWindow(findNextBtn_, SW_HIDE);
     if (findCloseBtn_) ShowWindow(findCloseBtn_, SW_HIDE);
-    if (edit_) ShowWindow(edit_, SW_HIDE);
+    if (edit_) {
+        richEditSetText(edit_, L"");
+        ShowWindow(edit_, SW_HIDE);
+    }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -400,6 +411,17 @@ void ResponseView::clear() {
     contents_[0].clear();
     contents_[1].clear();
     contents_[2].clear();
+    jsonStatusText_.clear();
+    findOpen_ = false;
+    findMatchCur_ = 0;
+    findMatchTotal_ = 0;
+    if (findEdit_) SetWindowTextW(findEdit_, L"");
+    tab_ = 0;
+    if (tabs_) tabSetCurSel(tabs_, 0);
+    viewMode_ = 0;
+    setButtonStyle(prettyBtn_, kButtonPrimary);
+    setButtonStyle(rawBtn_, kButtonGhost);
+    setButtonStyle(previewBtn_, kButtonGhost);
     code_ = 0;
     error_ = false;
     loading_ = false;
@@ -415,7 +437,10 @@ void ResponseView::clear() {
     if (findPrevBtn_) ShowWindow(findPrevBtn_, SW_HIDE);
     if (findNextBtn_) ShowWindow(findNextBtn_, SW_HIDE);
     if (findCloseBtn_) ShowWindow(findCloseBtn_, SW_HIDE);
-    if (edit_) ShowWindow(edit_, SW_HIDE);
+    if (edit_) {
+        richEditSetText(edit_, L"");
+        ShowWindow(edit_, SW_HIDE);
+    }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -450,10 +475,9 @@ void ResponseView::copyCurrent() {
 }
 
 void ResponseView::paint() {
-    PAINTSTRUCT ps;
-    HDC dc = BeginPaint(hwnd_, &ps);
-    RECT rc;
-    GetClientRect(hwnd_, &rc);
+    DoubleBufferDC db(hwnd_);
+    HDC dc = db.dc();
+    const RECT rc = db.rect();
     const Theme& t = theme();
 
     fillRect(dc, rc, t.bg);
@@ -478,32 +502,52 @@ void ResponseView::paint() {
     const SIZE pillSize = measureText(dc, pillText, t.fontSmallBold);
     const int barY = t.scale(10);
     const int barH = t.scale(26);
-    RECT pill = {t.scale(16), barY, t.scale(16) + pillSize.cx + t.scale(20), barY + barH};
+    RECT pill = {t.scale(16), barY, t.scale(16) + pillSize.cx + t.scale(22), barY + barH};
     drawPill(dc, pill, pillText, t.fontSmallBold, pillColor, pillBg);
 
     if (!meta_.empty()) {
-        RECT meta = {pill.right + t.scale(10), barY, rc.right - t.scale(100), barY + barH};
+        RECT meta = {pill.right + t.scale(12), barY, rc.right - t.scale(100), barY + barH};
         drawText(dc, toWide(meta_), meta, t.fontSmall, t.textMuted,
                  DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
 
     if (!hasResponse_) {
         const int centerY = (t.scale(46) + rc.bottom) / 2;
-        RECT icon = {rc.right / 2 - t.scale(22), centerY - t.scale(64),
-                     rc.right / 2 + t.scale(22), centerY - t.scale(20)};
-        fillRound(dc, icon, t.scale(10), t.accentSoft);
-        drawText(dc, loading_ ? L"\u2192" : L"\u2191", icon, t.fontTitle, t.accent,
-                 DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+        RECT icon = {rc.right / 2 - t.scale(22), centerY - t.scale(68),
+                     rc.right / 2 + t.scale(22), centerY - t.scale(24)};
+        fillRound(dc, icon, t.scale(12), t.accentSoft);
+        drawSendIcon(dc, (icon.left + icon.right) / 2, (icon.top + icon.bottom) / 2,
+                     t.scale(18), t.accent);
 
-        RECT title = {t.scale(24), centerY - t.scale(8), rc.right - t.scale(24), centerY + t.scale(16)};
-        drawText(dc, loading_ ? L"Sending request..." : L"No response yet", title, t.fontUiMedium,
+        RECT title = {t.scale(24), centerY - t.scale(12), rc.right - t.scale(24), centerY + t.scale(12)};
+        drawText(dc, loading_ ? L"Sending request..." : L"Ready to send request", title, t.fontUiMedium,
                  t.text, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
 
-        RECT hint = {t.scale(24), centerY + t.scale(18), rc.right - t.scale(24), centerY + t.scale(44)};
+        RECT hint = {t.scale(24), centerY + t.scale(14), rc.right - t.scale(24), centerY + t.scale(36)};
         drawText(dc, loading_ ? L"Waiting for the server to respond."
-                              : L"Send a request and the result will appear here.",
+                              : L"Hit Send (Ctrl+Enter) to view the response headers, cookies, and JSON payload.",
                  hint, t.fontSmall, t.textMuted,
                  DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+
+        if (!loading_ && rc.bottom - t.scale(46) > t.scale(180)) {
+            const wchar_t* chips[] = {L"Ctrl+Enter  Send", L"Ctrl+S  Save", L"Ctrl+N  New", L"Ctrl+F  Find"};
+            int totalW = 0;
+            for (const wchar_t* c : chips) {
+                totalW += measureText(dc, c, t.fontSmall).cx + t.scale(22);
+            }
+            totalW += t.scale(8) * 3;
+            int chipX = (rc.right - totalW) / 2;
+            const int chipY = centerY + t.scale(46);
+            for (const wchar_t* c : chips) {
+                const int w = measureText(dc, c, t.fontSmall).cx + t.scale(20);
+                RECT chipRc = {chipX, chipY, chipX + w, chipY + t.scale(24)};
+                fillRound(dc, chipRc, t.scale(6), t.surfaceAlt);
+                strokeRound(dc, chipRc, t.scale(6), t.border, 1);
+                drawText(dc, c, chipRc, t.fontSmall, t.textMuted,
+                         DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+                chipX += w + t.scale(8);
+            }
+        }
     } else {
         RECT content = {t.scale(12), t.scale(88), rc.right - t.scale(12), rc.bottom - t.scale(12)};
         fillRound(dc, content, t.scale(8), t.codeBg);
@@ -512,8 +556,11 @@ void ResponseView::paint() {
         strokeRound(dc, border, t.scale(8), t.border, 1);
 
         if (tab_ == 0) {
-            const int statusY = content.bottom - t.scale(22);
-            RECT statusRc = {content.left + t.scale(10), statusY, content.right - t.scale(10), content.bottom - t.scale(2)};
+            const int statusY = content.bottom - t.scale(24);
+            drawLine(dc, content.left + t.scale(8), statusY,
+                     content.right - t.scale(8), statusY, t.border, 1);
+            RECT statusRc = {content.left + t.scale(10), statusY + t.scale(1),
+                             content.right - t.scale(10), content.bottom - t.scale(2)};
             COLORREF statusCol = jsonValid_ ? t.success : t.textMuted;
             drawText(dc, jsonStatusText_, statusRc, t.fontSmall, statusCol, DT_LEFT | DT_VCENTER | DT_NOPREFIX);
 
@@ -521,20 +568,22 @@ void ResponseView::paint() {
             drawText(dc, caretInfo, statusRc, t.fontSmall, t.textMuted, DT_RIGHT | DT_VCENTER | DT_NOPREFIX);
 
             if (findOpen_) {
+                fillRound(dc, findBoxRect_, t.scale(7), t.inputBg);
+                const bool findFocused = findEdit_ && GetFocus() == findEdit_;
+                strokeRound(dc, findBoxRect_, t.scale(7), findFocused ? t.accent : t.border, findFocused ? 2 : 1);
+
                 std::wstring matchText;
                 if (findMatchTotal_ > 0) {
                     matchText = std::to_wstring(findMatchCur_) + L" of " + std::to_wstring(findMatchTotal_);
                 } else {
                     matchText = L"No matches";
                 }
-                RECT matchRc = {content.left + t.scale(230), content.top + t.scale(6),
+                RECT matchRc = {findBoxRect_.right + t.scale(68), content.top + t.scale(6),
                                 content.right - t.scale(42), content.top + t.scale(34)};
                 drawText(dc, matchText, matchRc, t.fontSmall, t.textMuted, DT_LEFT | DT_VCENTER | DT_NOPREFIX);
             }
         }
     }
-
-    EndPaint(hwnd_, &ps);
 }
 
 LRESULT CALLBACK ResponseView::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -611,7 +660,17 @@ LRESULT ResponseView::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             doFind(true);
             return 0;
         }
+        if ((notification == EN_SETFOCUS || notification == EN_KILLFOCUS) && control == findEdit_) {
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
         return 0;
+    }
+    case WM_CTLCOLOREDIT: {
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        SetTextColor(dc, theme().text);
+        SetBkColor(dc, theme().inputBg);
+        return reinterpret_cast<LRESULT>(themeBrush(theme().inputBg));
     }
     case WM_NOTIFY: {
         const NMHDR* header = reinterpret_cast<const NMHDR*>(lParam);

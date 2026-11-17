@@ -56,7 +56,9 @@ private:
     LRESULT handleMessage(UINT msg, WPARAM wParam, LPARAM lParam);
 
     void rebuild();
-    void flatten(const Collection& collection, const CollectionNode& node, int depth);
+    void layout();
+    void flatten(const Collection& collection, const CollectionNode& node, int depth, const std::wstring& filterLower);
+    bool nodeMatchesFilter(const CollectionNode& node, const std::wstring& filterLower) const;
     bool isExpanded(const std::string& id, bool defaultValue) const;
     void toggle(const std::string& id, bool defaultValue);
     int rowAt(int y) const;
@@ -66,8 +68,11 @@ private:
     int bodyTop() const;
     int bodyBottom() const;
     RECT plusRect() const;
+    RECT searchRect() const;
 
     HWND hwnd_ = nullptr;
+    HWND filterEdit_ = nullptr;
+    std::wstring filterText_;
     std::vector<Collection> collections_;
     std::vector<Row> rows_;
     std::map<std::string, bool> expanded_;

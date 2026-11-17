@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "core/http_client.h"
@@ -78,6 +79,39 @@ private:
     void toggleResponseExpand();
     void joinWorker();
 
+    struct CachedResponse {
+        enum class Kind { Empty, Response, Error } kind = Kind::Empty;
+        std::string status;
+        std::string meta;
+        std::string body;
+        std::string headers;
+        std::string cookies;
+        int code = 0;
+        std::string errorTitle;
+        std::string errorDetail;
+    };
+
+    struct OpenRequestTab {
+        std::string key;
+        std::string collectionId;
+        std::string nodeId;
+        RequestModel draft;
+        RECT rect = {};
+        RECT closeRect = {};
+    };
+
+    std::string cacheKeyFor(const std::string& collectionId, const std::string& nodeId, const std::string& tabKey = {}) const;
+    std::string activeCacheKey() const;
+    void restoreResponseForCurrent();
+    void updateInheritedAuthForCurrent();
+    void openOrActivateTab(const std::string& collectionId, const std::string& nodeId, const RequestModel& req);
+    void switchToTab(int index);
+    void closeTab(int index);
+    void syncActiveTabFromEditor();
+    void removeCacheForCollection(const std::string& collectionId);
+    void removeCacheForNode(const std::string& collectionId, const std::string& nodeId);
+    void layoutTabBar();
+
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
     HACCEL accel_ = nullptr;
@@ -101,17 +135,32 @@ private:
     std::thread worker_;
     std::shared_ptr<CancelToken> cancel_;
     bool busy_ = false;
+    std::string inFlightCacheKey_;
 
     std::string currentCollectionId_;
     std::string currentNodeId_;
     HWND lastFocusedChild_ = nullptr;
 
+    std::vector<OpenRequestTab> openTabs_;
+    int activeTabIdx_ = -1;
+    int hoverTabIdx_ = -1;
+    int hoverCloseTabIdx_ = -1;
+    bool hoverNewTab_ = false;
+    bool tabTracking_ = false;
+    RECT tabBarRect_ = {};
+    RECT newTabBtnRect_ = {};
+    std::unordered_map<std::string, CachedResponse> responseCache_;
+
     bool draggingResponseSplitter_ = false;
     int dragStartY_ = 0;
     int dragStartResponseHeight_ = 0;
+    bool draggingSidebarSplitter_ = false;
+    int dragStartX_ = 0;
+    int dragStartSidebarWidth_ = 0;
     bool responseExpanded_ = false;
     int preExpandResponseHeight_ = 0;
     RECT splitterRect_ = {};
+    RECT sidebarSplitterRect_ = {};
 };
 
 } // namespace ui

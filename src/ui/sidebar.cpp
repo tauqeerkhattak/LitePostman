@@ -6,9 +6,11 @@
 #endif
 #include "ui/sidebar.h"
 
+#include <commctrl.h>
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cwctype>
 
 #include "ui/theme.h"
 #include "ui/util.h"
@@ -18,6 +20,7 @@ namespace ui {
 
 namespace {
 const wchar_t kSidebarClass[] = L"LitePostmanSidebar";
+const int kFilterEditId = 1901;
 const int kCommandManageEnvironments = 40004;
 const int kCommandNewRequest = 40007;
 const int kCommandNewFolder = 40008;
@@ -42,6 +45,18 @@ int countRequests(const std::vector<CollectionNode>& nodes) {
     }
     return total;
 }
+
+std::wstring toLowerW(std::wstring text) {
+    for (wchar_t& ch : text) ch = static_cast<wchar_t>(std::towlower(ch));
+    return text;
+}
+
+std::wstring shortMethodTag(const std::string& method) {
+    if (method == "DELETE") return L"DEL";
+    if (method == "OPTIONS") return L"OPT";
+    if (method == "PATCH") return L"PAT";
+    return toWide(method);
+}
 } // namespace
 
 Sidebar::Sidebar() {}
@@ -62,16 +77,38 @@ HWND Sidebar::create(HWND parent, int id) {
 
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return nullptr;
 
-    hwnd_ = CreateWindowExW(0, kSidebarClass, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+    hwnd_ = CreateWindowExW(0, kSidebarClass, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPCHILDREN,
                             0, 0, 270, 500, parent,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                             GetModuleHandleW(nullptr), this);
+    if (hwnd_) {
+        filterEdit_ = CreateWindowExW(0, WC_EDITW, L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                      0, 0, 180, 22, hwnd_,
+                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFilterEditId)),
+                                      GetModuleHandleW(nullptr), nullptr);
+        if (filterEdit_) {
+            SendMessageW(filterEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(theme().fontSmall), TRUE);
+            SendMessageW(filterEdit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"Filter requests..."));
+        }
+        layout();
+    }
     return hwnd_;
+}
+
+void Sidebar::layout() {
+    if (!hwnd_ || !filterEdit_) return;
+    const Theme& t = theme();
+    RECT s = searchRect();
+    const int editH = t.scale(18);
+    const int editY = s.top + (s.bottom - s.top - editH) / 2;
+    MoveWindow(filterEdit_, s.left + t.scale(28), editY,
+               std::max(t.scale(40), static_cast<int>(s.right - s.left) - t.scale(36)), editH, TRUE);
 }
 
 void Sidebar::resize(int x, int y, int width, int height) {
     if (!hwnd_) return;
     MoveWindow(hwnd_, x, y, width, height, TRUE);
+    layout();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -84,7 +121,27 @@ void Sidebar::toggle(const std::string& id, bool defaultValue) {
     expanded_[id] = !isExpanded(id, defaultValue);
 }
 
-void Sidebar::flatten(const Collection& collection, const CollectionNode& node, int depth) {
+bool Sidebar::nodeMatchesFilter(const CollectionNode& node, const std::wstring& filterLower) const {
+    if (filterLower.empty()) return true;
+    const std::wstring nameLower = toLowerW(toWide(node.name));
+    if (nameLower.find(filterLower) != std::wstring::npos) return true;
+    if (node.type == CollectionNode::Type::Request) {
+        const std::wstring urlLower = toLowerW(toWide(node.request.url));
+        if (urlLower.find(filterLower) != std::wstring::npos) return true;
+    }
+    for (const auto& child : node.children) {
+        if (nodeMatchesFilter(child, filterLower)) return true;
+    }
+    return false;
+}
+
+void Sidebar::flatten(const Collection& collection, const CollectionNode& node, int depth,
+                      const std::wstring& filterLower) {
+    if (!filterLower.empty() && !nodeMatchesFilter(node, filterLower)) return;
+
+    const bool filtering = !filterLower.empty();
+    const bool expanded = filtering ? true : isExpanded(node.id, false);
+
     Row row;
     row.collectionId = collection.id;
     row.nodeId = node.id;
@@ -92,28 +149,47 @@ void Sidebar::flatten(const Collection& collection, const CollectionNode& node, 
     row.depth = depth;
     row.folder = node.type == CollectionNode::Type::Folder;
     row.method = node.request.method;
-    row.expanded = isExpanded(node.id, false);
+    row.expanded = expanded;
     rows_.push_back(std::move(row));
 
-    if (node.type == CollectionNode::Type::Folder && isExpanded(node.id, false)) {
-        for (const auto& child : node.children) flatten(collection, child, depth + 1);
+    if (node.type == CollectionNode::Type::Folder && expanded) {
+        for (const auto& child : node.children) flatten(collection, child, depth + 1, filterLower);
     }
 }
 
 void Sidebar::rebuild() {
     rows_.clear();
+    const std::wstring filterLower = toLowerW(filterText_);
+    const bool filtering = !filterLower.empty();
+
     for (const auto& collection : collections_) {
+        bool anyChildMatches = false;
+        if (filtering) {
+            if (toLowerW(toWide(collection.name)).find(filterLower) != std::wstring::npos) {
+                anyChildMatches = true;
+            } else {
+                for (const auto& child : collection.children) {
+                    if (nodeMatchesFilter(child, filterLower)) {
+                        anyChildMatches = true;
+                        break;
+                    }
+                }
+            }
+            if (!anyChildMatches) continue;
+        }
+
+        const bool expanded = filtering ? true : isExpanded(collection.id, true);
         Row root;
         root.collectionId = collection.id;
         root.label = toWide(collection.name);
         root.depth = 0;
         root.folder = true;
         root.collection = true;
-        root.expanded = isExpanded(collection.id, true);
+        root.expanded = expanded;
         rows_.push_back(std::move(root));
 
-        if (isExpanded(collection.id, true)) {
-            for (const auto& child : collection.children) flatten(collection, child, 1);
+        if (expanded) {
+            for (const auto& child : collection.children) flatten(collection, child, 1, filterLower);
         }
     }
 
@@ -140,7 +216,7 @@ void Sidebar::setEnvironment(const std::wstring& name, bool active) {
 }
 
 int Sidebar::bodyTop() const {
-    return theme().scale(48);
+    return theme().scale(86);
 }
 
 int Sidebar::bodyBottom() const {
@@ -155,9 +231,16 @@ RECT Sidebar::plusRect() const {
     GetClientRect(hwnd_, &rc);
     const int size = t.scale(24);
     const int right = static_cast<int>(rc.right) - t.scale(12);
-    const int top = (bodyTop() - size) / 2;
+    const int top = (t.scale(44) - size) / 2;
     RECT plus = {right - size, top, right, top + size};
     return plus;
+}
+
+RECT Sidebar::searchRect() const {
+    const Theme& t = theme();
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    return {t.scale(12), t.scale(46), std::max(t.scale(120), static_cast<int>(rc.right) - t.scale(12)), t.scale(76)};
 }
 
 void Sidebar::selectNode(const std::string& collectionId, const std::string& nodeId) {
@@ -220,17 +303,17 @@ void Sidebar::selectIndex(int index, bool activate) {
 }
 
 void Sidebar::paint() {
-    PAINTSTRUCT ps;
-    HDC dc = BeginPaint(hwnd_, &ps);
-    RECT rc;
-    GetClientRect(hwnd_, &rc);
+    DoubleBufferDC db(hwnd_);
+    HDC dc = db.dc();
+    const RECT rc = db.rect();
 
     const Theme& t = theme();
     fillRect(dc, rc, t.surface);
     drawLine(dc, rc.right - 1, 0, rc.right - 1, rc.bottom, t.border, 1);
 
     // Header
-    RECT header = {t.scale(16), 0, rc.right - t.scale(16), bodyTop()};
+    const int headerH = t.scale(44);
+    RECT header = {t.scale(14), 0, rc.right - t.scale(14), headerH};
     drawText(dc, L"COLLECTIONS", header, t.fontSmallBold, t.textMuted,
              DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
 
@@ -242,36 +325,40 @@ void Sidebar::paint() {
     RECT plus = plusRect();
     const int pillRight = plus.left - t.scale(8);
     RECT countPill = {pillRight - countSize.cx - t.scale(14),
-                      (bodyTop() - t.scale(20)) / 2,
+                      (headerH - t.scale(20)) / 2,
                       pillRight,
-                      (bodyTop() + t.scale(20)) / 2};
+                      (headerH + t.scale(20)) / 2};
     drawPill(dc, countPill, countText, t.fontSmallBold, t.textMuted, t.surfaceAlt);
 
     fillRound(dc, plus, t.scale(6), plusHover_ ? t.accentSoft : t.surfaceAlt);
-    const int plusCx = (plus.left + plus.right) / 2;
-    const int plusCy = (plus.top + plus.bottom) / 2;
-    const int arm = t.scale(5);
-    const COLORREF plusColor = plusHover_ ? t.accent : t.textMuted;
-    drawLine(dc, plusCx - arm, plusCy, plusCx + arm, plusCy, plusColor, t.scale(2));
-    drawLine(dc, plusCx, plusCy - arm, plusCx, plusCy + arm, plusColor, t.scale(2));
+    drawPlusIcon(dc, (plus.left + plus.right) / 2, (plus.top + plus.bottom) / 2, t.scale(4),
+                 plusHover_ ? t.accent : t.textMuted);
+
+    // Search filter box
+    RECT s = searchRect();
+    fillRound(dc, s, t.scale(7), t.inputBg);
+    const bool filterFocused = filterEdit_ && GetFocus() == filterEdit_;
+    strokeRound(dc, s, t.scale(7), filterFocused ? t.accent : t.border, 1);
+    drawSearchIcon(dc, s.left + t.scale(14), (s.top + s.bottom) / 2, t.scale(12),
+                   filterFocused ? t.accent : t.textFaint);
 
     const int top = bodyTop();
     const int bottom = bodyBottom();
     const int rowH = t.scale(30);
 
     if (rows_.empty()) {
-        RECT empty = {t.scale(24), top, rc.right - t.scale(24), top + t.scale(90)};
-        drawText(dc, L"Nothing saved yet", empty, t.fontUiMedium, t.textMuted,
-                 DT_SINGLELINE | DT_CENTER | DT_TOP | DT_NOPREFIX);
-        RECT hint = {t.scale(24), top + t.scale(22), rc.right - t.scale(24), top + t.scale(80)};
-        drawText(dc, L"Click + above to create a request.", hint, t.fontSmall, t.textFaint,
-                 DT_CENTER | DT_TOP | DT_NOPREFIX);
+        RECT empty = {t.scale(20), top + t.scale(16), rc.right - t.scale(20), top + t.scale(44)};
+        drawText(dc, filterText_.empty() ? L"Nothing saved yet" : L"No matching requests",
+                 empty, t.fontUiMedium, t.textMuted, DT_SINGLELINE | DT_CENTER | DT_TOP | DT_NOPREFIX);
+        RECT hint = {t.scale(20), top + t.scale(40), rc.right - t.scale(20), top + t.scale(80)};
+        drawText(dc, filterText_.empty() ? L"Click + above to create a request." : L"Try a different filter.",
+                 hint, t.fontSmall, t.textFaint, DT_CENTER | DT_TOP | DT_NOPREFIX);
     } else {
         SaveDC(dc);
         IntersectClipRect(dc, 0, top, rc.right, bottom);
         for (int i = 0; i < static_cast<int>(rows_.size()); ++i) {
             const Row& row = rows_[static_cast<std::size_t>(i)];
-            RECT item = {t.scale(8), top + i * rowH - scroll_, rc.right - t.scale(12),
+            RECT item = {t.scale(8), top + i * rowH - scroll_, rc.right - t.scale(10),
                          top + i * rowH - scroll_ + rowH - t.scale(2)};
             if (item.bottom < top || item.top > bottom) continue;
 
@@ -279,42 +366,47 @@ void Sidebar::paint() {
                                   (!row.folder && row.nodeId == selectedNode_ && row.collectionId == selectedCollection_);
             if (selected) {
                 fillRound(dc, item, t.scale(6), t.accentSoft);
+                RECT bar = {item.left, item.top + t.scale(5), item.left + t.scale(3), item.bottom - t.scale(5)};
+                fillRound(dc, bar, t.scale(2), t.accent);
             } else if (i == hover_) {
                 fillRound(dc, item, t.scale(6), t.surfaceHover);
             }
 
-            const int baseX = t.scale(12) + row.depth * t.scale(16);
+            const int baseX = t.scale(12) + row.depth * t.scale(14);
             const int centerY = (item.top + item.bottom) / 2;
 
             if (row.folder) {
-                drawChevron(dc, baseX + t.scale(8), centerY, t.scale(8),
+                drawChevron(dc, baseX + t.scale(6), centerY, t.scale(8),
                             selected ? t.accent : t.textMuted, row.expanded);
-            }
-
-            const int iconX = baseX + t.scale(26);
-            if (row.collection) {
-                RECT icon = {iconX - t.scale(5), centerY - t.scale(5),
-                             iconX + t.scale(5), centerY + t.scale(5)};
-                fillRound(dc, icon, t.scale(3), selected ? t.accent : t.accentSoft);
-                if (!selected) {
-                    RECT inner = {icon.left + t.scale(3), icon.top + t.scale(3),
-                                  icon.right - t.scale(3), icon.bottom - t.scale(3)};
-                    fillRound(dc, inner, t.scale(1), t.accent);
+                RECT iconRc = {baseX + t.scale(16), centerY - t.scale(6),
+                               baseX + t.scale(29), centerY + t.scale(6)};
+                if (row.collection) {
+                    drawCollectionIcon(dc, iconRc, selected ? t.accent : t.accent, selected);
+                } else {
+                    drawFolderIcon(dc, iconRc, selected ? t.accent : t.textMuted,
+                                   selected ? t.accentSoft : t.surfaceAlt, row.expanded);
                 }
-            } else if (row.folder) {
-                RECT icon = {iconX - t.scale(5), centerY - t.scale(4),
-                             iconX + t.scale(5), centerY + t.scale(4)};
-                fillRound(dc, icon, t.scale(2), selected ? t.accent : t.surfaceAlt);
-                strokeRound(dc, icon, t.scale(2), selected ? t.accent : t.borderStrong, 1);
+                RECT textRect = {iconRc.right + t.scale(8), item.top, item.right - t.scale(8), item.bottom};
+                HFONT font = row.collection ? t.fontUiBold : t.fontUiMedium;
+                COLORREF color = selected ? t.accent : t.text;
+                drawText(dc, row.label, textRect, font, color,
+                         DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
             } else {
-                drawDot(dc, iconX, centerY, t.scale(3), methodColor(row.method));
-            }
+                const COLORREF mc = methodColor(row.method);
+                const std::wstring tag = shortMethodTag(row.method);
+                const int badgeW = t.scale(32);
+                const int badgeH = t.scale(16);
+                RECT badge = {baseX + t.scale(2), centerY - badgeH / 2,
+                              baseX + t.scale(2) + badgeW, centerY + badgeH / 2};
+                fillRound(dc, badge, t.scale(4), blend(mc, t.surface, 0.84));
+                drawText(dc, tag, badge, t.fontSmallBold, mc,
+                         DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
 
-            RECT textRect = {iconX + t.scale(12), item.top, item.right - t.scale(8), item.bottom};
-            HFONT font = row.collection ? t.fontUiBold : (row.folder ? t.fontUiMedium : t.fontUi);
-            COLORREF color = selected ? t.accent : (row.collection ? t.text : t.text);
-            drawText(dc, row.label, textRect, font, color,
-                     DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+                RECT textRect = {badge.right + t.scale(8), item.top, item.right - t.scale(8), item.bottom};
+                drawText(dc, row.label, textRect, selected ? t.fontUiMedium : t.fontUi,
+                         selected ? t.accent : t.text,
+                         DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+            }
         }
         RestoreDC(dc, -1);
 
@@ -345,8 +437,6 @@ void Sidebar::paint() {
              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
     drawChevron(dc, footer.right - t.scale(10), footerCenter, t.scale(7), t.textMuted, false);
-
-    EndPaint(hwnd_, &ps);
 }
 
 LRESULT CALLBACK Sidebar::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -373,9 +463,31 @@ LRESULT Sidebar::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         paint();
         return 0;
     case WM_SIZE:
+        layout();
         rebuild();
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
+    case WM_COMMAND: {
+        const HWND ctrl = reinterpret_cast<HWND>(lParam);
+        const WORD notif = HIWORD(wParam);
+        if (ctrl == filterEdit_) {
+            if (notif == EN_CHANGE) {
+                filterText_ = windowTextW(filterEdit_);
+                rebuild();
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            } else if (notif == EN_SETFOCUS || notif == EN_KILLFOCUS) {
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            return 0;
+        }
+        break;
+    }
+    case WM_CTLCOLOREDIT: {
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        SetTextColor(dc, theme().text);
+        SetBkColor(dc, theme().inputBg);
+        return reinterpret_cast<LRESULT>(themeBrush(theme().inputBg));
+    }
     case WM_MOUSEMOVE: {
         if (!tracking_) {
             TRACKMOUSEEVENT track = {sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd_, 0};
@@ -526,6 +638,11 @@ LRESULT Sidebar::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         break;
     }
     case kThemeChanged:
+        if (filterEdit_) {
+            SendMessageW(filterEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(theme().fontSmall), TRUE);
+            InvalidateRect(filterEdit_, nullptr, TRUE);
+        }
+        layout();
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     default:
