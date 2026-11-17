@@ -1903,11 +1903,42 @@ void MainWindow::toggleResponseExpand() {
 }
 
 void MainWindow::onExportCurl() {
+    std::string targetColId;
+    std::string targetNodeId;
+    sidebar_.getContextTarget(targetColId, targetNodeId);
+    sidebar_.clearContextTarget();
+
     RequestModel request = requestView_.getRequest();
+    std::string colId = currentCollectionId_;
+    std::string nodeId = currentNodeId_;
+    bool useActiveResponseView = true;
+
+    if (!targetColId.empty() && !targetNodeId.empty() &&
+        (targetColId != currentCollectionId_ || targetNodeId != currentNodeId_)) {
+        for (const auto& col : collections_) {
+            if (col.id != targetColId) continue;
+            const CollectionNode* node = findNode(col, targetNodeId);
+            if (node && node->type == CollectionNode::Type::Request) {
+                request = node->request;
+                colId = col.id;
+                nodeId = node->id;
+                useActiveResponseView = false;
+            }
+            break;
+        }
+    }
+
     const VariableMap global = variablesToMap(settings_.globalVariables);
-    Collection* collection = activeCollection();
+    Collection* collection = nullptr;
+    for (auto& col : collections_) {
+        if (col.id == colId) {
+            collection = &col;
+            break;
+        }
+    }
+    if (!collection) collection = activeCollection();
     if (collection) {
-        ResolvedAuth eff = resolveEffectiveAuth(*collection, currentNodeId_, request);
+        ResolvedAuth eff = resolveEffectiveAuth(*collection, nodeId, request);
         request.authType = eff.type;
         request.username = eff.username;
         request.password = eff.password;
@@ -1922,16 +1953,51 @@ void MainWindow::onExportCurl() {
     const CurlExportResult result = generateCurl(request, context, options);
 
     std::string text = result.command;
-    if (responseView_.hasResponse()) {
-        const std::string respBody = responseView_.getResponseBody();
-        if (!respBody.empty()) {
-            text += "\n\nResponse:\n";
-            text += respBody;
+    text += "\n\n";
+
+    bool hasResp = false;
+    std::string respStatus;
+    std::string respBody;
+
+    if (useActiveResponseView) {
+        hasResp = responseView_.hasResponse();
+        if (hasResp) {
+            respStatus = responseView_.getResponseStatus();
+            respBody = responseView_.getResponseBody();
+        }
+    } else {
+        const auto it = responseCache_.find(cacheKeyFor(colId, nodeId));
+        if (it != responseCache_.end() && it->second.kind != CachedResponse::Kind::Empty) {
+            hasResp = true;
+            if (it->second.kind == CachedResponse::Kind::Error) {
+                respStatus = it->second.errorTitle.empty() ? "Error" : it->second.errorTitle;
+                respBody = it->second.errorDetail;
+            } else {
+                respStatus = it->second.status;
+                respBody = Json::format(it->second.body);
+            }
         }
     }
 
+    if (hasResp) {
+        if (respStatus.empty()) respStatus = "Completed";
+        text += "# Response Body (" + respStatus + "):\n";
+        if (respBody.empty()) {
+            text += "# (Empty response body)\n";
+        } else {
+            std::istringstream stream(respBody);
+            std::string line;
+            while (std::getline(stream, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                text += "# " + line + "\n";
+            }
+        }
+    } else {
+        text += "# Response Body: (No response received yet)\n";
+    }
+
     if (CurlDialogs::exportCurl(hwnd_, text)) {
-        MessageBoxW(hwnd_, L"Copied cURL command to clipboard.", L"cURL Export", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(hwnd_, L"Copied cURL command with response body to clipboard.", L"cURL Export", MB_OK | MB_ICONINFORMATION);
     } else {
         MessageBoxW(hwnd_, L"Could not access the clipboard.", L"cURL Export", MB_OK | MB_ICONWARNING);
     }
